@@ -49,3 +49,4 @@ env/
 Thumbs.db
 
 data/
+*.arrow
