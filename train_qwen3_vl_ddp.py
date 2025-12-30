@@ -30,7 +30,7 @@ try:
         patch_optimize_sft_trainer_batch_samples,
     )
 
-    OPENSLOTH_AVAILABLE = True
+    OPENSLOTH_AVAILABLE = False
 except ImportError:
     OPENSLOTH_AVAILABLE = False
     print("⚠️  OpenSloth not available. Multi-GPU support will be limited.")
@@ -121,7 +121,7 @@ def parse_args():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="unsloth/Qwen3-VL-2B-Instruct-GGUF",
+        default="Qwen/Qwen3-VL-2B-Instruct",
         help="Model name or path",
     )
     parser.add_argument(
