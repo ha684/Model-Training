@@ -11,7 +11,7 @@ echo "======================================================="
 # Adjust batch size based on number of GPUs to maintain effective batch size
 if [ "$NUM_GPUS" -eq 2 ]; then
     BATCH_SIZE=2
-    GRAD_ACCUM=4
+    GRAD_ACCUM=1
 elif [ "$NUM_GPUS" -eq 4 ]; then
     BATCH_SIZE=1
     GRAD_ACCUM=8
