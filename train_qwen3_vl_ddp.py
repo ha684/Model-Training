@@ -11,8 +11,6 @@ Usage:
     # Multi-GPU (4 GPUs) with custom settings
     torchrun --nproc_per_node=4 train_qwen3_vl_ddp.py --batch_size 1 --epochs 3
 """
-from unsloth import FastVisionModel
-from unsloth.trainer import UnslothVisionDataCollator
 
 import argparse
 import os
@@ -22,7 +20,8 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset as TorchDataset
 from trl import SFTConfig, SFTTrainer
-
+from unsloth import FastVisionModel
+from unsloth.trainer import UnslothVisionDataCollator
 
 os.environ["HF_TOKEN"] = "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"
 
@@ -271,27 +270,52 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
     )
 
     # Fix tokenizer EOS token for SFTTrainer compatibility
-    # Qwen3-VL uses <|im_end|> or <|endoftext|> as EOS token
-    if not tokenizer.eos_token or tokenizer.eos_token == "<EOS_TOKEN>":
-        # Try to find the proper EOS token in the tokenizer
-        if hasattr(tokenizer, "tokenizer") and hasattr(
-            tokenizer.tokenizer, "eos_token"
-        ):
-            tokenizer.eos_token = tokenizer.tokenizer.eos_token
-        elif "<|im_end|>" in tokenizer.get_vocab():
-            tokenizer.eos_token = "<|im_end|>"
-        elif "<|endoftext|>" in tokenizer.get_vocab():
-            tokenizer.eos_token = "<|endoftext|>"
-        else:
-            # Fallback: use the first token that looks like an EOS token
-            vocab = tokenizer.get_vocab()
-            for token in ["<|end|>", "</s>", "<eos>", "[EOS]"]:
-                if token in vocab:
-                    tokenizer.eos_token = token
+    # For Qwen3VLProcessor, the actual tokenizer is nested inside
+    print(f"   Tokenizer type: {type(tokenizer).__name__}")
+
+    # Get the actual tokenizer if this is a processor
+    actual_tokenizer = tokenizer
+    if hasattr(tokenizer, "tokenizer"):
+        actual_tokenizer = tokenizer.tokenizer
+        print(f"   Found nested tokenizer: {type(actual_tokenizer).__name__}")
+
+    # Check current EOS token
+    current_eos = getattr(actual_tokenizer, "eos_token", None)
+    print(f"   Current EOS token: {current_eos}")
+
+    # Fix if EOS token is invalid
+    if not current_eos or current_eos == "<EOS_TOKEN>":
+        print("   Fixing EOS token...")
+
+        # Get vocabulary
+        try:
+            vocab = actual_tokenizer.get_vocab()
+
+            # Try common Qwen EOS tokens
+            for candidate in [
+                "<|im_end|>",
+                "<|endoftext|>",
+                "</s>",
+                "<|end|>",
+                "<eos>",
+            ]:
+                if candidate in vocab:
+                    actual_tokenizer.eos_token = candidate
+                    # Also set eos_token_id
+                    actual_tokenizer.eos_token_id = vocab[candidate]
+                    print(
+                        f"   ✓ Set EOS token to: {candidate} (id: {vocab[candidate]})"
+                    )
                     break
 
-        if tokenizer.eos_token:
-            print(f"   Set EOS token to: {tokenizer.eos_token}")
+            # If we set it on the nested tokenizer, also set on the processor
+            if hasattr(tokenizer, "tokenizer") and actual_tokenizer.eos_token:
+                tokenizer.eos_token = actual_tokenizer.eos_token
+
+        except Exception as e:
+            print(f"   ⚠️  Failed to fix EOS token: {e}")
+    else:
+        print(f"   ✓ EOS token is valid: {current_eos}")
 
     print("🔧 Configuring LoRA...")
     model = FastVisionModel.get_peft_model(
