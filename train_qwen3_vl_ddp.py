@@ -464,7 +464,6 @@ def build_trainer(
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
         data_collator=UnslothVisionDataCollator(model, tokenizer),
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
