@@ -22,14 +22,6 @@ else
 fi
 
 echo ""
-echo "📦 Installing PyTorch with CUDA support..."
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-echo ""
-echo "📦 Installing core dependencies..."
-pip install transformers datasets accelerate peft huggingface_hub trl bitsandbytes
-
-echo ""
 echo "📦 Installing Unsloth..."
 pip install unsloth
 

@@ -31,7 +31,7 @@ torchrun --nproc_per_node=$NUM_GPUS train_qwen3_vl_ddp.py \
     --batch_size $BATCH_SIZE \
     --grad_accum $GRAD_ACCUM \
     --epochs 3 \
-    --learning_rate 1e-4 \
+    --learning_rate 5e-5 \
     --eval_steps 50 \
     --save_model \
     --model_save_path outputs/multi_gpu_model \
