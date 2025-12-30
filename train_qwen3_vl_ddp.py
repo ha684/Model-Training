@@ -269,6 +269,29 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
         device_map=device_map,
     )
 
+    # Fix tokenizer EOS token for SFTTrainer compatibility
+    # Qwen3-VL uses <|im_end|> or <|endoftext|> as EOS token
+    if not tokenizer.eos_token or tokenizer.eos_token == "<EOS_TOKEN>":
+        # Try to find the proper EOS token in the tokenizer
+        if hasattr(tokenizer, "tokenizer") and hasattr(
+            tokenizer.tokenizer, "eos_token"
+        ):
+            tokenizer.eos_token = tokenizer.tokenizer.eos_token
+        elif "<|im_end|>" in tokenizer.get_vocab():
+            tokenizer.eos_token = "<|im_end|>"
+        elif "<|endoftext|>" in tokenizer.get_vocab():
+            tokenizer.eos_token = "<|endoftext|>"
+        else:
+            # Fallback: use the first token that looks like an EOS token
+            vocab = tokenizer.get_vocab()
+            for token in ["<|end|>", "</s>", "<eos>", "[EOS]"]:
+                if token in vocab:
+                    tokenizer.eos_token = token
+                    break
+
+        if tokenizer.eos_token:
+            print(f"   Set EOS token to: {tokenizer.eos_token}")
+
     print("🔧 Configuring LoRA...")
     model = FastVisionModel.get_peft_model(
         model,
@@ -464,6 +487,8 @@ def build_trainer(
 
     trainer = SFTTrainer(
         model=model,
+        tokenizer=tokenizer,
+        processing_class=tokenizer,  # For vision models, pass the processor
         data_collator=UnslothVisionDataCollator(model, tokenizer),
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
