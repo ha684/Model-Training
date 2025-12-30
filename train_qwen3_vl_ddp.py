@@ -16,6 +16,7 @@ import argparse
 import os
 from typing import Any, Dict, Tuple
 
+import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset as TorchDataset
 from trl import SFTConfig, SFTTrainer
@@ -110,6 +111,30 @@ IMPORTANT:
 
 Analyze and extract data from this document:"""
         return prompt
+
+
+def get_gpu_precision_settings() -> Dict[str, bool]:
+    """
+    Detect GPU capability and return appropriate precision settings.
+
+    Returns:
+        Dict with 'bf16' and 'fp16' settings based on GPU capability
+    """
+    if not torch.cuda.is_available():
+        return {"bf16": False, "fp16": False}
+
+    # Check if GPU supports bf16 (Ampere or newer, compute capability >= 8.0)
+    gpu_capability = torch.cuda.get_device_capability()
+    major, minor = gpu_capability
+
+    # Ampere (A100, RTX 30xx) and newer support bf16
+    supports_bf16 = major >= 8
+
+    if supports_bf16:
+        return {"bf16": True, "fp16": False}
+    else:
+        # Use fp16 for older GPUs (Pascal, Volta, Turing)
+        return {"bf16": False, "fp16": True}
 
 
 def parse_args():
@@ -382,6 +407,9 @@ def build_trainer(
     Returns:
         Configured SFTTrainer
     """
+    # Detect GPU capability and set appropriate precision
+    precision_settings = get_gpu_precision_settings()
+
     training_config = {
         "per_device_train_batch_size": args.batch_size,
         "per_device_eval_batch_size": args.eval_batch_size,
@@ -403,6 +431,8 @@ def build_trainer(
         "eval_strategy": "steps",
         "eval_steps": args.eval_steps,
         "save_strategy": "epoch",
+        # Add precision settings based on GPU capability
+        **precision_settings,
     }
 
     # Add DDP specific config for multi-GPU
@@ -413,8 +443,17 @@ def build_trainer(
 
     # Calculate effective batch size
     effective_batch = args.batch_size * args.grad_accum * world_size
+
+    # Determine precision mode for display
+    precision_mode = (
+        "bf16"
+        if precision_settings.get("bf16")
+        else ("fp16" if precision_settings.get("fp16") else "fp32")
+    )
+
     print("\n📊 Training configuration:")
     print(f"   - World size (GPUs): {world_size}")
+    print(f"   - Precision: {precision_mode}")
     print(f"   - Per device batch size: {args.batch_size}")
     print(f"   - Gradient accumulation: {args.grad_accum}")
     print(f"   - Effective batch size: {effective_batch}")
