@@ -11,6 +11,8 @@ Usage:
     # Multi-GPU (4 GPUs) with custom settings
     torchrun --nproc_per_node=4 train_qwen3_vl_ddp.py --batch_size 1 --epochs 3
 """
+from unsloth import FastVisionModel
+from unsloth.trainer import UnslothVisionDataCollator
 
 import argparse
 import os
@@ -20,8 +22,7 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset as TorchDataset
 from trl import SFTConfig, SFTTrainer
-from unsloth import FastVisionModel
-from unsloth.trainer import UnslothVisionDataCollator
+
 
 os.environ["HF_TOKEN"] = "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"
 
@@ -283,14 +284,12 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
     current_eos = getattr(actual_tokenizer, "eos_token", None)
     print(f"   Current EOS token: {current_eos}")
 
-    # Fix if EOS token is invalid
+    # Ensure EOS token is properly set
     if not current_eos or current_eos == "<EOS_TOKEN>":
         print("   Fixing EOS token...")
-
         # Get vocabulary
         try:
             vocab = actual_tokenizer.get_vocab()
-
             # Try common Qwen EOS tokens
             for candidate in [
                 "<|im_end|>",
@@ -301,21 +300,33 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
             ]:
                 if candidate in vocab:
                     actual_tokenizer.eos_token = candidate
-                    # Also set eos_token_id
                     actual_tokenizer.eos_token_id = vocab[candidate]
                     print(
                         f"   ✓ Set EOS token to: {candidate} (id: {vocab[candidate]})"
                     )
                     break
-
-            # If we set it on the nested tokenizer, also set on the processor
-            if hasattr(tokenizer, "tokenizer") and actual_tokenizer.eos_token:
-                tokenizer.eos_token = actual_tokenizer.eos_token
-
         except Exception as e:
             print(f"   ⚠️  Failed to fix EOS token: {e}")
     else:
         print(f"   ✓ EOS token is valid: {current_eos}")
+
+    # For processors, explicitly propagate all special tokens to ensure SFTTrainer sees them
+    if hasattr(tokenizer, "tokenizer"):
+        # Sync all special tokens from nested tokenizer to processor
+        for attr in [
+            "eos_token",
+            "eos_token_id",
+            "bos_token",
+            "bos_token_id",
+            "pad_token",
+            "pad_token_id",
+        ]:
+            if hasattr(actual_tokenizer, attr):
+                value = getattr(actual_tokenizer, attr)
+                if value is not None:
+                    setattr(tokenizer, attr, value)
+        print("   Synced special tokens to processor")
+        print(f"   Processor eos_token: {getattr(tokenizer, 'eos_token', None)}")
 
     print("🔧 Configuring LoRA...")
     model = FastVisionModel.get_peft_model(
@@ -508,6 +519,15 @@ def build_trainer(
     print(f"   - Learning rate: {args.learning_rate}")
     print(f"   - Epochs: {args.epochs}")
     print(f"   - Max sequence length: {args.max_seq_length}")
+
+    # Debug: Check tokenizer EOS token before creating trainer
+    print("\n🔍 Debug - Tokenizer info before SFTTrainer:")
+    print(f"   - Type: {type(tokenizer).__name__}")
+    print(f"   - Has eos_token attr: {hasattr(tokenizer, 'eos_token')}")
+    if hasattr(tokenizer, "eos_token"):
+        print(f"   - eos_token value: {tokenizer.eos_token}")
+    if hasattr(tokenizer, "tokenizer"):
+        print(f"   - Nested tokenizer eos_token: {tokenizer.tokenizer.eos_token}")
     print()
 
     trainer = SFTTrainer(
