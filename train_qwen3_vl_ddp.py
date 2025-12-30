@@ -25,7 +25,7 @@ os.environ["HF_TOKEN"] = "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"
 
 # Import opensloth DDP patches if available
 try:
-    from opensloth.src.opensloth.patching.ddp_patch import (
+    from closed_sloth.patching.ddp_patch import (
         ddp_patch,
         patch_optimize_sft_trainer_batch_samples,
     )
@@ -39,7 +39,7 @@ except ImportError:
 try:
     from config.fields_config import get_extraction_prompt
 except ImportError:
-    # Inline config fallback
+    print("⚠️  Config not available. Using inline config.")
     DEFAULT_FIELDS = [
         "Số phiếu",
         "Ngày chứng từ(mm/dd/yyyy)",
@@ -121,7 +121,7 @@ def parse_args():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="unsloth/Qwen3-VL-2B-Instruct-unsloth-bnb-4bit",
+        default="Qwen/Qwen3-VL-2B-Instruct",
         help="Model name or path",
     )
     parser.add_argument(
@@ -132,7 +132,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default="ha684/senko",
+        default="ha684/senko1",
         help="HuggingFace dataset name",
     )
     parser.add_argument(
@@ -465,6 +465,7 @@ def main():
 
         trainer_stats = unsloth_train(trainer)
     except ImportError:
+        print("⚠️  unsloth not available. Using trl's trainer.")
         trainer_stats = trainer.train()
 
     if rank == 0:

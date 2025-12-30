@@ -3,23 +3,19 @@
 Prepare and push dataset to Hugging Face Hub.
 
 This script converts the extraction results to a Hugging Face dataset
-with two columns: image (PIL Image loaded from file paths) and text (JSON string of metadata + table_rows).
-
-The script uses a memory-efficient approach by saving images to disk temporarily
-and processing them in a streaming fashion to avoid MemoryError issues.
+with two columns: image (PIL Image) and text (JSON string of metadata + table_rows).
 
 Usage:
     python prepare_hf_dataset.py --results ./output/results.json --dataset-name your-username/dataset-name
 """
 
 import argparse
+import hashlib
 import json
 import logging
 import os
-import shutil
-import tempfile
 from pathlib import Path
-from typing import Dict, Generator, List, Optional
+from typing import Dict, List, Optional
 
 from datasets import Dataset, DatasetDict, Features, Value
 from datasets import Image as HFImage
@@ -45,16 +41,32 @@ def load_results(results_path: str) -> List[Dict]:
 
 
 def extract_page_from_pdf(
-    pdf_path: str, page_number: int, dpi: int = 200
-) -> Optional[Image.Image]:
-    """Extract a specific page from PDF as PIL Image."""
+    pdf_path: str, page_number: int, output_dir: str, dpi: int = 200
+) -> Optional[str]:
+    """Extract a specific page from PDF and save to disk.
+
+    Returns the path to the saved image file, or None on failure.
+    """
     try:
+        # Create a unique filename based on source path and page number
+        hash_input = f"{pdf_path}_{page_number}"
+        file_hash = hashlib.md5(hash_input.encode()).hexdigest()[:12]
+        output_path = os.path.join(output_dir, f"page_{file_hash}.png")
+
+        # Skip if already extracted
+        if os.path.exists(output_path):
+            return output_path
+
         # pdf2image uses 1-based indexing
         images = convert_from_path(
             pdf_path, dpi=dpi, first_page=page_number, last_page=page_number
         )
         if images:
-            return images[0]
+            images[0].save(output_path, format="PNG")
+            # Explicitly close/delete the PIL image to free memory
+            images[0].close()
+            del images
+            return output_path
         return None
     except Exception as e:
         logger.error(f"Failed to extract page {page_number} from {pdf_path}: {e}")
@@ -67,19 +79,16 @@ def create_text_annotation(metadata: List[Dict], table_rows: List[Dict]) -> str:
     return json.dumps(annotation, ensure_ascii=False, indent=2)
 
 
-def prepare_dataset_rows(
-    results: List[Dict], temp_image_dir: Path
-) -> Generator[Dict, None, None]:
+def prepare_dataset_rows(results: List[Dict], image_cache_dir: str) -> List[Dict]:
     """Convert results to dataset rows with image paths and text columns.
 
-    This generator yields rows one at a time to avoid loading all images into memory.
-    Images are saved to disk temporarily and their paths are stored.
+    Images are saved to disk to avoid memory issues with large datasets.
     """
-    # Cache for PDF images to avoid re-loading the same PDF multiple times
-    pdf_cache = {}
+    dataset_rows = []
 
-    temp_image_dir.mkdir(parents=True, exist_ok=True)
-    image_counter = 0
+    # Ensure image cache directory exists
+    os.makedirs(image_cache_dir, exist_ok=True)
+    logger.info(f"Saving extracted images to: {image_cache_dir}")
 
     for result in tqdm(results, desc="Processing results"):
         source_file = result.get("source_file")
@@ -95,67 +104,54 @@ def prepare_dataset_rows(
             )
             continue
 
-        # Get image
-        image = None
+        # Get image path (images are saved to disk to avoid memory issues)
+        image_path = None
         if source_type == "pdf":
-            # Check cache first
-            cache_key = f"{source_file}_{page_number}"
-            if cache_key in pdf_cache:
-                image = pdf_cache[cache_key]
-            else:
-                image = extract_page_from_pdf(source_file, page_number)
-                if image:
-                    pdf_cache[cache_key] = image
+            image_path = extract_page_from_pdf(
+                source_file, page_number, image_cache_dir
+            )
         elif source_type == "image":
+            # For image sources, copy to cache dir to ensure consistent handling
             try:
-                image = Image.open(source_file)
+                if os.path.exists(source_file):
+                    hash_input = f"{source_file}"
+                    file_hash = hashlib.md5(hash_input.encode()).hexdigest()[:12]
+                    ext = Path(source_file).suffix or ".png"
+                    cached_path = os.path.join(image_cache_dir, f"img_{file_hash}{ext}")
+
+                    if not os.path.exists(cached_path):
+                        # Open, convert to RGB if needed, and save
+                        with Image.open(source_file) as img:
+                            if img.mode in ("RGBA", "P"):
+                                img = img.convert("RGB")
+                            img.save(cached_path, format="PNG")
+                    image_path = cached_path
             except Exception as e:
-                logger.error(f"Failed to load image {source_file}: {e}")
+                logger.error(f"Failed to process image {source_file}: {e}")
 
-        if image is None:
+        if image_path is None:
             logger.warning(f"Failed to get image for {source_file} page {page_number}")
-            continue
-
-        # Save image to temporary directory
-        image_counter += 1
-        image_filename = f"image_{image_counter:06d}.png"
-        image_path = temp_image_dir / image_filename
-
-        try:
-            # Convert to RGB if necessary (some images might be in other modes)
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-            image.save(image_path, format="PNG", optimize=True)
-            # Close the image to free memory immediately
-            image.close()
-            # Remove from cache if it was cached (to free memory)
-            if source_type == "pdf" and cache_key in pdf_cache:
-                del pdf_cache[cache_key]
-        except Exception as e:
-            logger.error(f"Failed to save image {image_path}: {e}")
             continue
 
         # Create text annotation
         text = create_text_annotation(metadata, table_rows)
 
-        # Yield row with image path instead of PIL Image object
-        yield {
-            "image": str(image_path),
-            "text": text,
-            "source_file": source_file,
-            "page_number": page_number,
-        }
+        # Add to dataset (using file path instead of PIL Image object)
+        dataset_rows.append(
+            {
+                "image": image_path,
+                "text": text,
+                "source_file": source_file,
+                "page_number": page_number,
+            }
+        )
 
-    logger.info(f"Prepared {image_counter} dataset rows")
+    logger.info(f"Prepared {len(dataset_rows)} dataset rows")
+    return dataset_rows
 
 
-def create_huggingface_dataset(
-    dataset_generator: Generator[Dict, None, None],
-) -> Dataset:
-    """Create Hugging Face Dataset from generator of rows.
-
-    Uses from_generator to process rows one at a time, avoiding memory issues.
-    """
+def create_huggingface_dataset(dataset_rows: List[Dict]) -> Dataset:
+    """Create Hugging Face Dataset from prepared rows."""
     # Define features
     features = Features(
         {
@@ -166,8 +162,8 @@ def create_huggingface_dataset(
         }
     )
 
-    # Create dataset from generator - this processes rows one at a time
-    dataset = Dataset.from_generator(dataset_generator, features=features)
+    # Create dataset
+    dataset = Dataset.from_list(dataset_rows, features=features)
     logger.info(f"Created Hugging Face dataset with {len(dataset)} examples")
 
     return dataset
@@ -242,6 +238,11 @@ Examples:
         action="store_true",
         help="Make the dataset private on Hugging Face",
     )
+    parser.add_argument(
+        "--image-cache-dir",
+        default=None,
+        help="Directory to cache extracted images (default: <output-dir>/images)",
+    )
 
     args = parser.parse_args()
 
@@ -252,79 +253,65 @@ Examples:
         logger.error("No results found in the JSON file!")
         return
 
-    # Create temporary directory for images
-    temp_image_dir = Path(tempfile.mkdtemp(prefix="hf_dataset_images_"))
-    logger.info(f"Using temporary directory for images: {temp_image_dir}")
+    # Set up image cache directory
+    output_dir = Path(args.output_dir)
+    image_cache_dir = args.image_cache_dir or str(output_dir / "images")
 
-    try:
-        # Prepare dataset rows generator
-        dataset_generator = prepare_dataset_rows(results, temp_image_dir)
+    # Prepare dataset rows (saves images to disk to avoid memory issues)
+    dataset_rows = prepare_dataset_rows(results, image_cache_dir)
 
-        # Create dataset from generator
-        dataset = create_huggingface_dataset(dataset_generator)
+    if not dataset_rows:
+        logger.error("No valid dataset rows created!")
+        return
 
-        if len(dataset) == 0:
-            logger.error("No valid dataset rows created!")
-            return
+    # Create dataset
+    dataset = create_huggingface_dataset(dataset_rows)
 
-        # Split dataset if requested
-        if args.no_split:
-            final_dataset = dataset
-        else:
-            final_dataset = split_dataset(dataset, args.train_ratio)
+    # Split dataset if requested
+    if args.no_split:
+        final_dataset = dataset
+    else:
+        final_dataset = split_dataset(dataset, args.train_ratio)
 
-        # Save locally
-        output_dir = Path(args.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Saving dataset to {output_dir}")
+    # Save locally
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Saving dataset to {output_dir}")
 
-        if isinstance(final_dataset, DatasetDict):
-            final_dataset.save_to_disk(str(output_dir))
-        else:
-            final_dataset.save_to_disk(str(output_dir))
+    if isinstance(final_dataset, DatasetDict):
+        final_dataset.save_to_disk(str(output_dir))
+    else:
+        final_dataset.save_to_disk(str(output_dir))
 
-        logger.info("✓ Dataset saved locally")
+    logger.info("✓ Dataset saved locally")
 
-        # Push to Hugging Face if dataset name provided
-        if args.dataset_name:
-            logger.info(f"Pushing dataset to Hugging Face: {args.dataset_name}")
-            try:
-                if isinstance(final_dataset, DatasetDict):
-                    final_dataset.push_to_hub(args.dataset_name, private=args.private)
-                else:
-                    final_dataset.push_to_hub(args.dataset_name, private=args.private)
-                logger.info("✓ Dataset pushed to Hugging Face successfully!")
-                logger.info(
-                    f"View at: https://huggingface.co/datasets/{args.dataset_name}"
-                )
-            except Exception as e:
-                logger.error(f"Failed to push to Hugging Face: {e}")
-                logger.info("Dataset is still saved locally.")
-        else:
-            logger.info("Skipping Hugging Face push (no dataset name provided)")
+    # Push to Hugging Face if dataset name provided
+    if args.dataset_name:
+        logger.info(f"Pushing dataset to Hugging Face: {args.dataset_name}")
+        try:
+            if isinstance(final_dataset, DatasetDict):
+                final_dataset.push_to_hub(args.dataset_name, private=args.private)
+            else:
+                final_dataset.push_to_hub(args.dataset_name, private=args.private)
+            logger.info("✓ Dataset pushed to Hugging Face successfully!")
+            logger.info(f"View at: https://huggingface.co/datasets/{args.dataset_name}")
+        except Exception as e:
+            logger.error(f"Failed to push to Hugging Face: {e}")
+            logger.info("Dataset is still saved locally.")
+    else:
+        logger.info("Skipping Hugging Face push (no dataset name provided)")
 
-        # Print summary
-        logger.info("\n" + "=" * 60)
-        logger.info("Summary:")
-        if isinstance(final_dataset, DatasetDict):
-            logger.info(f"  Train: {len(final_dataset['train'])} examples")
-            logger.info(f"  Validation: {len(final_dataset['validation'])} examples")
-        else:
-            logger.info(f"  Total: {len(final_dataset)} examples")
-        logger.info(f"  Local path: {output_dir}")
-        if args.dataset_name:
-            logger.info(f"  HF dataset: {args.dataset_name}")
-        logger.info("=" * 60)
-
-    finally:
-        # Clean up temporary image directory
-        if temp_image_dir.exists():
-            logger.info(f"Cleaning up temporary directory: {temp_image_dir}")
-            try:
-                shutil.rmtree(temp_image_dir)
-                logger.info("✓ Temporary directory cleaned up")
-            except Exception as e:
-                logger.warning(f"Failed to clean up temporary directory: {e}")
+    # Print summary
+    logger.info("\n" + "=" * 60)
+    logger.info("Summary:")
+    if isinstance(final_dataset, DatasetDict):
+        logger.info(f"  Train: {len(final_dataset['train'])} examples")
+        logger.info(f"  Validation: {len(final_dataset['validation'])} examples")
+    else:
+        logger.info(f"  Total: {len(final_dataset)} examples")
+    logger.info(f"  Local path: {output_dir}")
+    if args.dataset_name:
+        logger.info(f"  HF dataset: {args.dataset_name}")
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":
