@@ -11,8 +11,6 @@ Usage:
     # Multi-GPU (4 GPUs) with custom settings
     torchrun --nproc_per_node=4 train_qwen3_vl_ddp.py --batch_size 1 --epochs 3
 """
-from unsloth import FastVisionModel
-from unsloth.trainer import UnslothVisionDataCollator
 
 import argparse
 import os
@@ -22,7 +20,8 @@ import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset as TorchDataset
 from trl import SFTConfig, SFTTrainer
-
+from unsloth import FastVisionModel
+from unsloth.trainer import UnslothVisionDataCollator
 
 os.environ["HF_TOKEN"] = "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"
 
@@ -488,8 +487,7 @@ def build_trainer(
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
-        processing_class=tokenizer,  # For vision models, pass the processor
+        processing_class=tokenizer,  # In TRL 0.12.0+, use processing_class instead of tokenizer
         data_collator=UnslothVisionDataCollator(model, tokenizer),
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
