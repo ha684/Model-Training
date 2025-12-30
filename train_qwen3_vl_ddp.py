@@ -121,7 +121,7 @@ def parse_args():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="Qwen/Qwen3-VL-2B-Instruct",
+        default="unsloth/Qwen3-VL-2B-Instruct-GGUF",
         help="Model name or path",
     )
     parser.add_argument(
