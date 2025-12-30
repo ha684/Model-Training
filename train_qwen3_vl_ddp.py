@@ -11,15 +11,16 @@ Usage:
     # Multi-GPU (4 GPUs) with custom settings
     torchrun --nproc_per_node=4 train_qwen3_vl_ddp.py --batch_size 1 --epochs 3
 """
-from unsloth import FastVisionModel
-from unsloth.trainer import UnslothVisionDataCollator
 
 import argparse
 import os
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 
 from datasets import load_dataset
+from torch.utils.data import Dataset as TorchDataset
 from trl import SFTConfig, SFTTrainer
+from unsloth import FastVisionModel
+from unsloth.trainer import UnslothVisionDataCollator
 
 os.environ["HF_TOKEN"] = "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"
 
@@ -289,9 +290,38 @@ def convert_to_conversation(sample: Dict, instruction: str) -> Dict:
     return {"messages": conversation}
 
 
-def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[List, List]:
+class LazyVisionDataset(TorchDataset):
     """
-    Load and prepare datasets from HuggingFace.
+    Lazy loading dataset wrapper that converts samples to conversation format on-demand.
+
+    This avoids loading all images into memory at once, preventing OOM errors
+    with large image datasets.
+    """
+
+    def __init__(self, hf_dataset, instruction: str):
+        """
+        Args:
+            hf_dataset: HuggingFace dataset with 'image' and 'text' columns
+            instruction: System instruction/prompt for extraction
+        """
+        self.dataset = hf_dataset
+        self.instruction = instruction
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        # Load only this sample's image on-demand
+        sample = self.dataset[idx]
+        return convert_to_conversation(sample, self.instruction)
+
+
+def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
+    """
+    Load and prepare datasets from HuggingFace with lazy loading.
+
+    Uses LazyVisionDataset to load images on-demand during training,
+    avoiding OOM errors from loading all images into memory at once.
 
     Args:
         args: Command line arguments
@@ -300,7 +330,7 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[List, L
     Returns:
         Tuple of (train_dataset, eval_dataset)
     """
-    # Only load on rank 0 to avoid duplicate downloads
+    # Only print on rank 0 to avoid duplicate logs
     if local_rank == 0:
         print(f"📊 Loading dataset: {args.dataset_name}")
 
@@ -308,33 +338,33 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[List, L
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
-    # Load datasets
+    # Load datasets (lazy - images stored in Arrow format, not decoded yet)
     train_dataset = load_dataset(args.dataset_name, split="train")
     eval_dataset = load_dataset(args.dataset_name, split="validation")
 
     if local_rank == 0:
-        print(f"✅ Loaded {len(train_dataset)} training samples")
-        print(f"✅ Loaded {len(eval_dataset)} validation samples")
+        print(f"✅ Found {len(train_dataset)} training samples")
+        print(f"✅ Found {len(eval_dataset)} validation samples")
 
     # Get extraction prompt
     instruction = get_extraction_prompt()
 
-    # Convert to conversation format
-    converted_train = [
-        convert_to_conversation(sample, instruction) for sample in train_dataset
-    ]
-    converted_eval = [
-        convert_to_conversation(sample, instruction) for sample in eval_dataset
-    ]
+    # Wrap with lazy loading - images loaded one at a time during training
+    # This prevents OOM by not loading all images into memory at once
+    lazy_train = LazyVisionDataset(train_dataset, instruction)
+    lazy_eval = LazyVisionDataset(eval_dataset, instruction)
 
-    return converted_train, converted_eval
+    if local_rank == 0:
+        print("✅ Datasets wrapped with lazy loading (images loaded on-demand)")
+
+    return lazy_train, lazy_eval
 
 
 def build_trainer(
     model: Any,
     tokenizer: Any,
-    train_dataset: List,
-    eval_dataset: List,
+    train_dataset: Any,
+    eval_dataset: Any,
     args: argparse.Namespace,
     world_size: int,
 ) -> SFTTrainer:
