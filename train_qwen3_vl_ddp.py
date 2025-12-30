@@ -238,7 +238,7 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
 
     model, tokenizer = FastVisionModel.from_pretrained(
         args.model_name,
-        load_in_4bit=True,
+        load_in_4bit=False,
         use_gradient_checkpointing="unsloth",
         device_map=device_map,
     )
