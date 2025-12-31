@@ -492,7 +492,15 @@ def main():
             print("✅ Push to Hub completed!")
         except Exception as e:
             print(f"⚠️ Failed to push to hub: {e}")
-
+            
+    if args.report_to == "mlflow" and rank == 0:
+        mlflow.set_tracking_uri(args.mlflow_uri)
+        mlflow.set_experiment(args.mlflow_experiment_name)
+        
+        with mlflow.start_run(run_name=args.mlflow_run_name):
+            mlflow.pytorch.log_model(model, "model")
+            mlflow.log_artifacts(args.model_save_path, artifact_path="lora_model")
+            
     if rank == 0:
         print("\n" + "=" * 70)
         print("🎉 All done! Happy training! 🦥⚡")
