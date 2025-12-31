@@ -224,7 +224,6 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
 
     return model, tokenizer
 
-
 def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
     vision_params = []
     proj_params = []
@@ -242,27 +241,38 @@ def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
         if not p.requires_grad:
             continue
 
-        if "merger" in n or "projector" in n or "mm_projector" in n or "mlp" in n:
-            proj_params.append(p)
-            count_p += 1
-
-        elif "visual" in n or "vision" in n:
+        if any(keyword in n for keyword in [
+            "visual", "vision", "vision_tower", "vision_model", 
+            "image_encoder", "visual_encoder"
+        ]):
             vision_params.append(p)
             count_v += 1
-
+        
+        elif any(keyword in n for keyword in [
+            "merger", "projector", "mm_projector", 
+            "multi_modal_projector", "vision_projector"
+        ]):
+            proj_params.append(p)
+            count_p += 1
+        
         else:
             llm_params.append(p)
             count_l += 1
 
-    print(f"  - LLM params ({LR_LLM}): {count_l} tensors")
-    print(f"  - Projector params ({LR_PROJ}): {count_p} tensors")
     print(f"  - Vision params ({LR_VISION}): {count_v} tensors")
+    print(f"  - Projector params ({LR_PROJ}): {count_p} tensors")
+    print(f"  - LLM params ({LR_LLM}): {count_l} tensors")
+
+    total_trainable = sum(1 for p in model.parameters() if p.requires_grad)
+    total_grouped = count_v + count_p + count_l
+    if total_trainable != total_grouped:
+        print(f"⚠️  WARNING: {total_trainable - total_grouped} params not grouped!")
 
     optimizer = AdamW(
         [
-            {"params": llm_params, "lr": LR_LLM},
-            {"params": proj_params, "lr": LR_PROJ},
             {"params": vision_params, "lr": LR_VISION},
+            {"params": proj_params, "lr": LR_PROJ},
+            {"params": llm_params, "lr": LR_LLM},
         ],
         weight_decay=args.weight_decay,
     )
@@ -274,7 +284,6 @@ def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
     )
 
     return optimizer, scheduler
-
 
 def convert_to_conversation(sample: Dict, instruction: str) -> Dict:
     conversation = [
