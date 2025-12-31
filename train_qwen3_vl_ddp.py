@@ -158,38 +158,11 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
         use_gradient_checkpointing="unsloth",
         device_map=device_map,
     )
-    print(f"   Tokenizer type: {type(tokenizer).__name__}")
 
     actual_tokenizer = tokenizer
     if hasattr(tokenizer, "tokenizer"):
         actual_tokenizer = tokenizer.tokenizer
         print(f"   Found nested tokenizer: {type(actual_tokenizer).__name__}")
-
-    current_eos = getattr(actual_tokenizer, "eos_token", None)
-    print(f"   Current EOS token: {current_eos}")
-
-    if not current_eos or current_eos == "<EOS_TOKEN>":
-        print("   Fixing EOS token...")
-        try:
-            vocab = actual_tokenizer.get_vocab()
-            for candidate in [
-                "<|im_end|>",
-                "<|endoftext|>",
-                "</s>",
-                "<|end|>",
-                "<eos>",
-            ]:
-                if candidate in vocab:
-                    actual_tokenizer.eos_token = candidate
-                    actual_tokenizer.eos_token_id = vocab[candidate]
-                    print(
-                        f"   ✓ Set EOS token to: {candidate} (id: {vocab[candidate]})"
-                    )
-                    break
-        except Exception as e:
-            print(f"   ⚠️  Failed to fix EOS token: {e}")
-    else:
-        print(f"   ✓ EOS token is valid: {current_eos}")
 
     if hasattr(tokenizer, "tokenizer"):
         for attr in [
@@ -237,8 +210,10 @@ def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
     LR_VISION = args.learning_rate * 0.1
 
     count_v, count_p, count_l = 0, 0, 0
-    print(model.named_parameters())
+
     for n, p in model.named_parameters():
+        print(n)
+        print(p)
         if not p.requires_grad:
             continue
             
