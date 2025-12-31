@@ -7,22 +7,12 @@ import math
 
 SEARCH_SPACE = {
     "learning_rate": (1e-5, 3e-4, "log"), 
-    
     "lora_r": [16, 32, 64, 128],
-    
     "lora_alpha": [16, 32, 64, 128],
-    
-    "lora_dropout": (0.0, 0.1), 
-    
-    "batch_size": [1, 2],
-    
+    "lora_dropout": (0.0, 0.1),     
     "grad_accum": [4, 8, 16],
-    
     "weight_decay": (0.0, 0.1),
-    
     "warmup_steps": (0, 100, "int"),
-    
-    "max_steps": [50, 100, 150, 200], 
 }
 
 def get_random_value(key, value):
@@ -69,7 +59,7 @@ def main():
 
     for i in range(args.num_trials):
         config = get_random_config()
-        run_name = f"rs_trial_{i + 1}_lr{config['learning_rate']:.0e}_r{config['lora_r']}_steps{config['max_steps']}"
+        run_name = f"rs_trial_{i + 1}_lr{config['learning_rate']:.0e}_r{config['lora_r']}_steps100"
 
         print(f"\n{'=' * 20} STARTING TRIAL {i + 1}/{args.num_trials} {'=' * 20}")
         print(f"⚙️ Config: {config}")
@@ -91,7 +81,7 @@ def main():
             "--lora_dropout",
             str(config["lora_dropout"]),
             "--batch_size",
-            str(config["batch_size"]),
+            "4",
             "--grad_accum",
             str(config["grad_accum"]),
             "--weight_decay",
@@ -99,7 +89,7 @@ def main():
             "--warmup_steps",
             str(config["warmup_steps"]),
             "--max_steps",
-            str(config["max_steps"]),
+            "100",
             "--eval_steps",
             "25",
             "--logging_steps",
