@@ -31,7 +31,7 @@ pip install git+https://github.com/anhvth/opensloth.git
 
 echo ""
 echo "📦 Installing additional utilities..."
-pip install pillow tqdm psutil tensorboard
+pip install pillow tqdm psutil tensorboard mlflow
 
 echo ""
 echo "================================================"
