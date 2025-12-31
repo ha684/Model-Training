@@ -1,13 +1,12 @@
 #!/bin/bash
 # Training script for Multi-GPU
 # Usage: bash train_multi_gpu.sh [num_gpus] [batch_size] [grad_accum]
-# Example: bash train_multi_gpu.sh 2 4 2
-# Example: bash train_multi_gpu.sh 4 2 4
+# Example: bash train_multi_gpu.sh 2 4 1 1
 
-NUM_GPUS=${1:-2}        # Default to 2 GPUs if not specified
-BATCH_SIZE=${2:-2}      # Default to 2 batch size per GPU if not specified
-GRAD_ACCUM=${3:-4}      # Default to 4 gradient accumulation if not specified
-EPOCHS=${4:-3}          # Default to 3 epochs if not specified
+NUM_GPUS=${1:-2}        # Default to 2 GPUs
+BATCH_SIZE=${2:-2}      # Default to 2 batch size per GPU
+GRAD_ACCUM=${3:-4}      # Default to 4 gradient accumulation
+EPOCHS=${4:-3}     
 HF_TOKEN=${5:-"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"}
 DATASET_NAME=${6:-"ha684/senko1"}
 MODEL_NAME=${7:-"Qwen/Qwen3-VL-2B-Instruct"}
@@ -15,7 +14,6 @@ MODEL_NAME=${7:-"Qwen/Qwen3-VL-2B-Instruct"}
 echo "🚀 Starting Multi-GPU Training with $NUM_GPUS GPUs..."
 echo "======================================================="
 
-# Calculate effective batch size
 EFFECTIVE_BATCH_SIZE=$((BATCH_SIZE * GRAD_ACCUM * NUM_GPUS))
 
 echo "Configuration:"
@@ -25,19 +23,8 @@ echo "  - Gradient accumulation: $GRAD_ACCUM"
 echo "  - Effective batch size: $EFFECTIVE_BATCH_SIZE"
 echo ""
 
-# Validate inputs
 if [ "$NUM_GPUS" -lt 1 ]; then
     echo "❌ Error: Number of GPUs must be at least 1"
-    exit 1
-fi
-
-if [ "$BATCH_SIZE" -lt 1 ]; then
-    echo "❌ Error: Batch size must be at least 1"
-    exit 1
-fi
-
-if [ "$GRAD_ACCUM" -lt 1 ]; then
-    echo "❌ Error: Gradient accumulation must be at least 1"
     exit 1
 fi
 
@@ -58,11 +45,12 @@ torchrun --nproc_per_node=$NUM_GPUS train_qwen3_vl_ddp.py \
     --weight_decay 0.01 \
     --eval_batch_size 4 \
     --logging_steps 1 \
-    --max_seq_length 8192 \ \
-    --save_model \
-    --model_save_path outputs/multi_gpu_model \
-    --output_dir outputs/multi_gpu_${NUM_GPUS}gpus_bs${EFFECTIVE_BATCH_SIZE} \
-    --report_to none \
-echo "======================================================="
-echo "✅ Training completed!"
-echo "📁 Output directory: outputs/multi_gpu_${NUM_GPUS}gpus_bs${EFFECTIVE_BATCH_SIZE}"
+    --max_seq_length 8192
+
+if [ $? -eq 0 ]; then
+    echo "======================================================="
+    echo "✅ Training completed!"
+    echo "📁 Output directory: outputs/multi_gpu_${NUM_GPUS}gpus_bs${EFFECTIVE_BATCH_SIZE}"
+else
+    echo "❌ Training failed!"
+fi
