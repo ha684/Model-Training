@@ -1,45 +1,24 @@
 #!/bin/bash
-# Setup script for Qwen3-VL training environment
-# Usage: bash setup_environment.sh
+# Setup script for Qwen3-VL training environment (Silent Version for Kaggle)
 
-echo "🔧 Setting up Qwen3-VL training environment..."
-echo "================================================"
+echo "⏳ Đang thiết lập môi trường (vui lòng đợi trong giây lát)..."
 
-# Check if Python is available
-if ! command -v python &> /dev/null; then
-    echo "❌ Python not found. Please install Python 3.8+"
-    exit 1
-fi
+# Chặn mọi output thông thường, chỉ hiện lỗi nếu có
+{
+    # Update pip trước
+    python -m pip install --upgrade pip -q
 
-echo "✅ Python version: $(python --version)"
+    # Cài đặt unsloth và các thư viện liên quan
+    # Lưu ý: Trên Kaggle thường cần cài đặt unsloth theo đúng bản cho GPU
+    pip install unsloth -q
+    
+    # Cài đặt các tiện ích bổ sung
+    pip install pillow tqdm psutil tensorboard mlflow -q
+} > /dev/null 2>&1
 
-# Check if CUDA is available
-if command -v nvidia-smi &> /dev/null; then
-    echo "✅ CUDA available"
-    nvidia-smi --query-gpu=name --format=csv,noheader
+if [ $? -eq 0 ]; then
+    echo "✅ Thiết lập hoàn tất!"
+    echo "🚀 Bạn có thể bắt đầu training ngay bây giờ."
 else
-    echo "⚠️  CUDA not detected. GPU training may not work."
+    echo "❌ Có lỗi xảy ra trong quá trình cài đặt. Vui lòng kiểm tra lại!"
 fi
-
-echo ""
-echo "📦 Installing Unsloth..."
-pip install unsloth
-
-echo ""
-echo "📦 Installing additional utilities..."
-pip install pillow tqdm psutil tensorboard mlflow
-
-echo ""
-echo "================================================"
-echo "✅ Environment setup completed!"
-echo ""
-echo "Next steps:"
-echo "  1. Prepare your dataset on HuggingFace Hub"
-echo "  2. Configure fields in config/fields_config.py (if needed)"
-echo "  3. Run training:"
-echo "     - Single GPU: python train_qwen3_vl_ddp.py"
-echo "     - Multi-GPU:  torchrun --nproc_per_node=2 train_qwen3_vl_ddp.py"
-echo ""
-echo "📖 See TRAINING_GUIDE.md for detailed instructions"
-echo "================================================"
-
