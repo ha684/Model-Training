@@ -348,7 +348,7 @@ def build_trainer(
         "warmup_steps": args.warmup_steps,
         "learning_rate": args.learning_rate,
         "logging_steps": args.logging_steps,
-        "optim": "adamw",
+        "optim": "adamw_torch_fused",
         "weight_decay": args.weight_decay,
         "lr_scheduler_type": "linear",
         "seed": args.seed,
@@ -369,7 +369,6 @@ def build_trainer(
         **precision_settings,
     }
 
-    # Use max_steps if specified (overrides epochs)
     if args.max_steps > 0:
         training_config["max_steps"] = args.max_steps
     else:
