@@ -21,12 +21,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Add parent directory to path to allow importing from config
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import google.generativeai as genai
 from pdf2image import convert_from_path
 from PIL import Image
 
-# Add parent directory to path for config import
-sys.path.insert(0, str(Path(__file__).parent))
 from config.fields_config import (
     METADATA_FIELDS,
     TABLE_ROW_FIELDS,
@@ -650,7 +651,7 @@ def run_pipeline(
 
             try:
                 genai.configure(api_key=current_key)
-                model = genai.GenerativeModel("gemini-2.5-flash")
+                model = genai.GenerativeModel("gemini-3-flash-preview")
 
                 success = process_file(
                     file_path=file_path,

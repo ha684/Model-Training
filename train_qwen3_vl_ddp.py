@@ -1,3 +1,4 @@
+# train_qwen3_vl_ddp.py
 #!/usr/bin/env python3
 """
 Fine-tune Qwen3-VL Vision Language Model with Multi-GPU support using OpenSloth + Unsloth
@@ -11,20 +12,20 @@ Usage:
     # Multi-GPU (4 GPUs) with custom settings
     torchrun --nproc_per_node=4 train_qwen3_vl_ddp.py --batch_size 1 --epochs 3
 """
-from unsloth import FastVisionModel
-from unsloth.trainer import UnslothVisionDataCollator
 
 import argparse
 import os
 from typing import Any, Dict, Tuple
 
+import mlflow
 import torch
 from datasets import load_dataset
-from torch.utils.data import Dataset as TorchDataset
 from torch.optim import AdamW
+from torch.utils.data import Dataset as TorchDataset
 from transformers import EarlyStoppingCallback, get_cosine_schedule_with_warmup
 from trl import SFTConfig, SFTTrainer
-
+from unsloth import FastVisionModel
+from unsloth.trainer import UnslothVisionDataCollator
 
 from config.fields_config import get_extraction_prompt
 
@@ -95,6 +96,12 @@ def parse_args():
         "--epochs", type=int, default=1, help="Number of training epochs"
     )
     parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=-1,
+        help="Maximum number of training steps (overrides epochs if > 0)",
+    )
+    parser.add_argument(
         "--learning_rate", type=float, default=1e-4, help="Learning rate"
     )
     parser.add_argument("--warmup_steps", type=int, default=5, help="Warmup steps")
@@ -128,16 +135,34 @@ def parse_args():
         "--report_to",
         type=str,
         default="none",
-        choices=["none", "tensorboard", "wandb"],
+        choices=["none", "tensorboard", "wandb", "mlflow"],
         help="Reporting tool",
+    )
+    parser.add_argument(
+        "--mlflow_uri", type=str, default="http://localhost:5000", help="MLflow URI"
+    )
+    parser.add_argument(
+        "--mlflow_experiment_name",
+        type=str,
+        default="qwen3_vl_finetune",
+        help="MLflow experiment name",
+    )
+    parser.add_argument(
+        "--mlflow_run_name",
+        type=str,
+        default="qwen3_vl_finetune",
+        help="MLflow run name",
     )
     parser.add_argument("--seed", type=int, default=3407, help="Random seed")
     parser.add_argument(
-        "--no_patches",
-        action="store_true",
-        help="Disable OpenSloth DDP patches",
+        "--push_to_hub", action="store_true", help="Push model to Hugging Face Hub"
     )
-
+    parser.add_argument(
+        "--hub_model_id",
+        type=str,
+        default=None,
+        help="Repository ID on HF (e.g., username/qwen-finetuned)",
+    )
     return parser.parse_args()
 
 
@@ -198,13 +223,14 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
 
     return model, tokenizer
 
+
 def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
     vision_params = []
     proj_params = []
     llm_params = []
 
     print("🔍 Grouping parameters for Differential LR...")
-    
+
     LR_LLM = args.learning_rate
     LR_PROJ = args.learning_rate * 1.0
     LR_VISION = args.learning_rate * 0.1
@@ -214,15 +240,15 @@ def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
     for n, p in model.named_parameters():
         if not p.requires_grad:
             continue
-            
+
         if "merger" in n or "projector" in n or "mm_projector" in n or "mlp" in n:
             proj_params.append(p)
             count_p += 1
-        
+
         elif "visual" in n or "vision" in n:
             vision_params.append(p)
             count_v += 1
-            
+
         else:
             llm_params.append(p)
             count_l += 1
@@ -239,14 +265,15 @@ def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
         ],
         weight_decay=args.weight_decay,
     )
-    
+
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=args.warmup_steps,
-        num_training_steps=num_training_steps
+        num_training_steps=num_training_steps,
     )
-    
+
     return optimizer, scheduler
+
 
 def convert_to_conversation(sample: Dict, instruction: str) -> Dict:
     conversation = [
@@ -318,10 +345,9 @@ def build_trainer(
         "per_device_eval_batch_size": args.eval_batch_size,
         "gradient_accumulation_steps": args.grad_accum,
         "warmup_steps": args.warmup_steps,
-        "num_train_epochs": args.epochs,
         "learning_rate": args.learning_rate,
         "logging_steps": args.logging_steps,
-        "optim": "adamw_8bit",
+        "optim": "adamw",
         "weight_decay": args.weight_decay,
         "lr_scheduler_type": "linear",
         "seed": args.seed,
@@ -342,6 +368,12 @@ def build_trainer(
         **precision_settings,
     }
 
+    # Use max_steps if specified (overrides epochs)
+    if args.max_steps > 0:
+        training_config["max_steps"] = args.max_steps
+    else:
+        training_config["num_train_epochs"] = args.epochs
+
     if world_size > 1:
         training_config["ddp_find_unused_parameters"] = False
 
@@ -354,9 +386,11 @@ def build_trainer(
         if precision_settings.get("bf16")
         else ("fp16" if precision_settings.get("fp16") else "fp32")
     )
-    
-    optimizer, scheduler = create_custom_optimizer_and_scheduler(model, args, effective_batch)
-    
+
+    optimizer, scheduler = create_custom_optimizer_and_scheduler(
+        model, args, effective_batch
+    )
+
     print("\n📊 Training configuration:")
     print(f"   - World size (GPUs): {world_size}")
     print(f"   - Precision: {precision_mode}")
@@ -364,7 +398,10 @@ def build_trainer(
     print(f"   - Gradient accumulation: {args.grad_accum}")
     print(f"   - Effective batch size: {effective_batch}")
     print(f"   - Learning rate: {args.learning_rate}")
-    print(f"   - Epochs: {args.epochs}")
+    if args.max_steps > 0:
+        print(f"   - Max steps: {args.max_steps}")
+    else:
+        print(f"   - Epochs: {args.epochs}")
     print(f"   - Max sequence length: {args.max_seq_length}")
 
     trainer = SFTTrainer(
@@ -440,6 +477,21 @@ def main():
         model.save_pretrained(args.model_save_path)
         tokenizer.save_pretrained(args.model_save_path)
         print("✅ Model saved successfully!")
+
+    if args.push_to_hub and args.hub_model_id and rank == 0:
+        print(f"🚀 Pushing model to Hugging Face Hub: {args.hub_model_id}...")
+        try:
+            model.push_to_hub(args.hub_model_id, use_temp_dir=True)
+            tokenizer.push_to_hub(args.hub_model_id, use_temp_dir=True)
+
+            if args.report_to == "mlflow":
+                mlflow.log_text(
+                    f"https://huggingface.co/{args.hub_model_id}", "hf_model_url.txt"
+                )
+
+            print("✅ Push to Hub completed!")
+        except Exception as e:
+            print(f"⚠️ Failed to push to hub: {e}")
 
     if rank == 0:
         print("\n" + "=" * 70)
