@@ -6,11 +6,11 @@ import time
 import math
 
 SEARCH_SPACE = {
-    "learning_rate": (1e-5, 3e-4, "log"), 
+    "learning_rate": (1e-5, 5e-4, "log"), 
     "lora_r": [16, 32, 64, 128],
     "lora_alpha": [16, 32, 64, 128],
     "lora_dropout": (0.0, 0.1),     
-    "grad_accum": [4, 8, 16],
+    "grad_accum": [1,2, 4, 8, 16, 32],
     "weight_decay": (0.0, 0.1),
     "warmup_steps": (0, 100, "int"),
 }
@@ -91,9 +91,9 @@ def main():
             "--max_steps",
             "100",
             "--eval_steps",
-            "25",
+            "20",
             "--logging_steps",
-            "5",
+            "1",
             "--output_dir",
             f"outputs/hpo/{run_name}",
             "--mlflow_uri",
