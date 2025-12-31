@@ -213,15 +213,14 @@ def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
 
     for n, p in model.named_parameters():
         print(n)
-        print(p)
         if not p.requires_grad:
             continue
             
-        if "merger" in n or "projector" in n or "mm_projector" in n:
+        if "merger" in n or "projector" in n or "mm_projector" in n or "mlp" in n:
             proj_params.append(p)
             count_p += 1
         
-        elif "visual" in n:
+        elif "visual" in n or "vision" in n:
             vision_params.append(p)
             count_v += 1
             
