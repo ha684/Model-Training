@@ -433,7 +433,18 @@ def build_trainer(
 
 def main():
     args = parse_args()
-
+    
+    if args.report_to == "mlflow":
+        os.environ["MLFLOW_TRACKING_URI"] = args.mlflow_uri
+        os.environ["MLFLOW_EXPERIMENT_NAME"] = args.mlflow_experiment_name
+        
+        if args.mlflow_run_name:
+            os.environ["MLFLOW_RUN_NAME"] = args.mlflow_run_name
+        
+        mlflow.set_tracking_uri(args.mlflow_uri)
+        mlflow.set_experiment(args.mlflow_experiment_name)
+        print(f"✅ [Init] MLflow Configured: {args.mlflow_uri} | Exp: {args.mlflow_experiment_name}")
+            
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     rank = int(os.environ.get("RANK", 0))
@@ -503,24 +514,18 @@ def main():
             print(f"⚠️ Failed to push to hub: {e}")
             
     if args.report_to == "mlflow" and rank == 0:        
-        mlflow.set_tracking_uri(args.mlflow_uri)
-        mlflow.set_experiment(args.mlflow_experiment_name)
+        print("📤 Uploading extra artifacts to MLflow...")
         
-        active_run = mlflow.active_run()
-        if active_run is None:
-            mlflow.start_run(run_name=args.mlflow_run_name)
-        
-        print("📤 Uploading model to MLflow...")
-        
-        if args.save_model:
-            model.save_pretrained(args.model_save_path)
-            tokenizer.save_pretrained(args.model_save_path)
-            mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
-        
-        mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
-        
-        mlflow.end_run()
-        print("✅ Model uploaded to MLflow!")
+        last_run = mlflow.last_active_run()
+        if last_run:
+            with mlflow.start_run(run_id=last_run.info.run_id):
+                if args.save_model:
+                    mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
+                
+                mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
+                print("✅ Artifacts uploaded to MLflow run:", last_run.info.run_id)
+        else:
+            print("⚠️ Could not find active MLflow run to upload artifacts.")
             
     if rank == 0:
         print("\n" + "=" * 70)
