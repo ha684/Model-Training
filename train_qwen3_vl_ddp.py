@@ -17,6 +17,8 @@ import argparse
 import os
 from typing import Any, Dict, Tuple
 
+from unsloth import FastVisionModel
+from unsloth.trainer import UnslothVisionDataCollator
 import mlflow
 import torch
 from datasets import load_dataset
@@ -24,8 +26,7 @@ from torch.optim import AdamW
 from torch.utils.data import Dataset as TorchDataset
 from transformers import EarlyStoppingCallback, get_cosine_schedule_with_warmup
 from trl import SFTConfig, SFTTrainer
-from unsloth import FastVisionModel
-from unsloth.trainer import UnslothVisionDataCollator
+
 
 from config.fields_config import get_extraction_prompt
 
