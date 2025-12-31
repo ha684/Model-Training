@@ -7,6 +7,10 @@
 NUM_GPUS=${1:-2}        # Default to 2 GPUs if not specified
 BATCH_SIZE=${2:-2}      # Default to 2 batch size per GPU if not specified
 GRAD_ACCUM=${3:-4}      # Default to 4 gradient accumulation if not specified
+EPOCHS=${4:-3}          # Default to 3 epochs if not specified
+HF_TOKEN=${5:-"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"}
+DATASET_NAME=${6:-"ha684/senko1"}
+MODEL_NAME=${7:-"Qwen/Qwen3-VL-2B-Instruct"}
 
 echo "🚀 Starting Multi-GPU Training with $NUM_GPUS GPUs..."
 echo "======================================================="
@@ -40,14 +44,25 @@ fi
 torchrun --nproc_per_node=$NUM_GPUS train_qwen3_vl_ddp.py \
     --batch_size $BATCH_SIZE \
     --grad_accum $GRAD_ACCUM \
-    --epochs 3 \
+    --epochs $EPOCHS \
     --learning_rate 5e-5 \
     --eval_steps 20 \
     --save_model \
     --model_save_path outputs/multi_gpu_model \
     --output_dir outputs/multi_gpu_${NUM_GPUS}gpus_bs${EFFECTIVE_BATCH_SIZE} \
-    --report_to none
-
+    --report_to none \
+    --hf_token $HF_TOKEN \
+    --dataset_name $DATASET_NAME \
+    --model_name $MODEL_NAME \
+    --warmup_steps 50 \
+    --weight_decay 0.01 \
+    --eval_batch_size 4 \
+    --logging_steps 1 \
+    --max_seq_length 8192 \ \
+    --save_model \
+    --model_save_path outputs/multi_gpu_model \
+    --output_dir outputs/multi_gpu_${NUM_GPUS}gpus_bs${EFFECTIVE_BATCH_SIZE} \
+    --report_to none \
 echo "======================================================="
 echo "✅ Training completed!"
 echo "📁 Output directory: outputs/multi_gpu_${NUM_GPUS}gpus_bs${EFFECTIVE_BATCH_SIZE}"

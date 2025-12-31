@@ -78,7 +78,7 @@ FIELD DEFINITIONS AND EXTRACTION RULES:
 
 6. **"Mã AR"** (AR Code/Customer Code):
    - Customer or account receivable code
-   - Example format: "A68/750" or with suffix "A68/750___141"
+   - Example format: "A68/750" or with suffix "A68/750_141"
    - Extract the COMPLETE code including any suffix numbers after underscores
    - Location: Usually appears in a field labeled "Mã AR" or "Khách hàng"
 
