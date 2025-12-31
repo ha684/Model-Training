@@ -12,7 +12,7 @@ SEARCH_SPACE = {
     "lora_dropout": (0.0, 0.1),     
     "grad_accum": [1,2, 4, 8, 16, 32],
     "weight_decay": (0.0, 0.1),
-    "warmup_steps": (0, 100, "int"),
+    "warmup_steps": (0, 20, "int"),
 }
 
 def get_random_value(key, value):
