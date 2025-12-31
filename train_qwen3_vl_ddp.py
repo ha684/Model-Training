@@ -184,7 +184,7 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
     model = FastVisionModel.get_peft_model(
         model,
         finetune_vision_layers=False,
-        finetune_language_layers=True,
+        finetune_language_layers=False,
         finetune_attention_modules=True,
         finetune_mlp_modules=True,
         r=args.lora_r,
@@ -212,7 +212,6 @@ def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
     count_v, count_p, count_l = 0, 0, 0
 
     for n, p in model.named_parameters():
-        print(n)
         if not p.requires_grad:
             continue
             
