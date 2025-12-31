@@ -26,10 +26,6 @@ echo "📦 Installing Unsloth..."
 pip install unsloth
 
 echo ""
-echo "📦 Installing OpenSloth for multi-GPU optimization..."
-pip install git+https://github.com/anhvth/opensloth.git
-
-echo ""
 echo "📦 Installing additional utilities..."
 pip install pillow tqdm psutil tensorboard mlflow
 
