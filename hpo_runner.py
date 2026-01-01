@@ -59,7 +59,7 @@ def main():
 
     for i in range(args.num_trials):
         config = get_random_config()
-        run_name = f"rs_trial_{i + 1}_lr{config['learning_rate']:.0e}_r{config['lora_r']}_steps100"
+        run_name = f"rs_trial_{i + 1}_lr{config['learning_rate']:.0e}_r{config['lora_r']}_alpha{config['lora_alpha']}"
 
         print(f"\n{'=' * 20} STARTING TRIAL {i + 1}/{args.num_trials} {'=' * 20}")
         print(f"⚙️ Config: {config}")
@@ -89,9 +89,9 @@ def main():
             "--warmup_steps",
             str(config["warmup_steps"]),
             "--max_steps",
-            "50",
+            "30",
             "--eval_steps",
-            "10",
+            "5",
             "--logging_steps",
             "1",
             "--output_dir",

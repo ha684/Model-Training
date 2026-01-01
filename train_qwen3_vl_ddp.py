@@ -180,9 +180,12 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
 
     model, tokenizer = FastVisionModel.from_pretrained(
         args.model_name,
+        max_seq_length=args.max_seq_length,
         load_in_4bit=False,
+        load_in_16bit=True,
         use_gradient_checkpointing="unsloth",
         device_map=device_map,
+        fast_inference=True,
     )
 
     actual_tokenizer = tokenizer

@@ -52,4 +52,4 @@ data/
 *.arrow
 hf_dataset
 mlflow.db
-mlflow.db
+mlartifacts/
