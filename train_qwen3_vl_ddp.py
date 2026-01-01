@@ -375,6 +375,7 @@ def build_trainer(
         "metric_for_best_model": "eval_loss",
         "greater_is_better": False,
         "save_total_limit": 2,
+        "run_name": args.mlflow_run_name,
         **precision_settings,
     }
 

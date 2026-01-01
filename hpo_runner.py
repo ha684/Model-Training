@@ -10,7 +10,7 @@ SEARCH_SPACE = {
     "lora_r": [16, 32, 64, 128],
     "lora_alpha": [16, 32, 64, 128],
     "lora_dropout": (0.0, 0.1),     
-    "grad_accum": [1,2, 4, 8, 16, 32],
+    "grad_accum": [1,2, 4, 8],
     "weight_decay": (0.0, 0.1),
     "warmup_steps": (0, 20, "int"),
 }
