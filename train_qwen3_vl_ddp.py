@@ -164,6 +164,7 @@ def parse_args():
         default=None,
         help="Repository ID on HF (e.g., username/qwen-finetuned)",
     )
+    parser.add_argument("--metric_file", type=str, default=None, help="File path to save the final metric")
     return parser.parse_args()
 
 
@@ -492,6 +493,16 @@ def main():
         trainer_stats = trainer.train()
 
     if rank == 0:
+        metrics = trainer.evaluate()
+        final_eval_loss = metrics.get("eval_loss", float("inf"))
+        
+        print(f"📉 Final Eval Loss: {final_eval_loss}")
+
+        if args.metric_file:
+            import json
+            with open(args.metric_file, "w") as f:
+                json.dump({"eval_loss": final_eval_loss}, f)
+                
         print()
         print("✅ Training completed!")
         print(f"📊 Training stats: {trainer_stats}")

@@ -13,4 +13,6 @@ dependencies = [
     "unsloth>=2025.12.9",
     "transformers>=4.57.3",
     "mlflow>=3.8.1",
+    "optuna>=4.6.0",
+    "optuna-integration[mlflow]>=4.6.0",
 ]

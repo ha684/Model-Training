@@ -245,9 +245,7 @@ def process_file(
                     "page_number": page_num,
                     "total_pages": len(images),
                     "generated_at": datetime.now().isoformat(),
-                    "document_summary": result.get("document_summary", ""),
                     "conversation": result.get("conversation", []),
-                    "key_information_covered": result.get("key_information_covered", []),
                 }
                 append_result(output_entry, output_path)
                 logger.info(f"  ✓ Generated conversation for page {page_num} ({len(result.get('conversation', []))} turns)")
@@ -258,9 +256,7 @@ def process_file(
                     "page_number": page_num,
                     "total_pages": len(images),
                     "generated_at": datetime.now().isoformat(),
-                    "document_summary": "",
                     "conversation": [],
-                    "key_information_covered": [],
                     "error": "Failed to generate conversation",
                 }
                 append_result(output_entry, output_path)
@@ -286,9 +282,7 @@ def process_file(
                     "page_number": 1,
                     "total_pages": 1,
                     "generated_at": datetime.now().isoformat(),
-                    "document_summary": result.get("document_summary", ""),
                     "conversation": result.get("conversation", []),
-                    "key_information_covered": result.get("key_information_covered", []),
                 }
                 append_result(output_entry, output_path)
                 logger.info(f"  ✓ Generated conversation ({len(result.get('conversation', []))} turns)")
@@ -299,9 +293,7 @@ def process_file(
                     "page_number": 1,
                     "total_pages": 1,
                     "generated_at": datetime.now().isoformat(),
-                    "document_summary": "",
                     "conversation": [],
-                    "key_information_covered": [],
                     "error": "Failed to generate conversation",
                 }
                 append_result(output_entry, output_path)
@@ -370,7 +362,7 @@ def run_pipeline(
 
             try:
                 genai.configure(api_key=current_key)
-                model = genai.GenerativeModel("gemini-2.0-flash-exp")
+                model = genai.GenerativeModel("gemini-3-flash-preview")
 
                 success = process_file(
                     file_path=file_path,
