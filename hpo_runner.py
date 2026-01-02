@@ -5,7 +5,7 @@ import json
 import optuna
 from optuna.integration.mlflow import MLflowCallback
 
-def objective(trial, args):
+def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
     """
     Hàm này định nghĩa 1 lần chạy thử nghiệm (1 trial)
     """
@@ -17,7 +17,7 @@ def objective(trial, args):
     lora_dropout = trial.suggest_float("lora_dropout", 0.0, 0.1)
     grad_accum = trial.suggest_categorical("grad_accum", [1, 2, 4, 8])
     weight_decay = trial.suggest_float("weight_decay", 0.0, 0.1)
-    warmup_steps = trial.suggest_int("warmup_steps", 0, 20)
+    # warmup_steps = trial.suggest_int("warmup_steps", 0, 20)
 
     # Tạo tên run
     run_name = f"optuna_trial_{trial.number}_lr{learning_rate:.1e}_r{lora_r}_alpha{lora_alpha}"
@@ -42,9 +42,9 @@ def objective(trial, args):
         "--batch_size", "4",
         "--grad_accum", str(grad_accum),
         "--weight_decay", str(weight_decay),
-        "--warmup_steps", str(warmup_steps),
-        "--max_steps", "50", 
-        "--eval_steps", "10",
+        "--warmup_steps", "5",
+        "--max_steps", "30", 
+        "--eval_steps", "5",
         "--logging_steps", "1",
         "--output_dir", f"outputs/hpo/{run_name}",
         "--mlflow_uri", args.ngrok_url,
