@@ -8,7 +8,7 @@ echo "⏳ Đang thiết lập môi trường (vui lòng đợi trong giây lát)
     pip install unsloth -q
     
     # Cài đặt các tiện ích bổ sung
-    pip install pillow tqdm psutil tensorboard mlflow optuna optuna-integration[mlflow] vllm -q
+    pip install pillow tqdm psutil tensorboard mlflow optuna optuna-integration[mlflow] -q
 } > /dev/null 2>&1
 
 if [ $? -eq 0 ]; then
