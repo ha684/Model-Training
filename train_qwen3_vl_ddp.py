@@ -186,7 +186,6 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
         load_in_16bit=True,
         use_gradient_checkpointing="unsloth",
         device_map=device_map,
-        fast_inference=True,
     )
 
     actual_tokenizer = tokenizer
