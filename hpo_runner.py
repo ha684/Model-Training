@@ -39,7 +39,7 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         "--lora_r", str(lora_r),
         "--lora_alpha", str(lora_alpha),
         "--lora_dropout", str(lora_dropout),
-        "--batch_size", "4",
+        "--batch_size", "2",
         "--grad_accum", str(grad_accum),
         "--weight_decay", str(weight_decay),
         "--warmup_steps", "5",
