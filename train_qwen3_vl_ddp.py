@@ -164,6 +164,7 @@ def parse_args():
         default=None,
         help="Repository ID on HF (e.g., username/qwen-finetuned)",
     )
+    parser.add_argument("--metric_file", type=str, default=None, help="File path to save the final metric")
     return parser.parse_args()
 
 
@@ -180,7 +181,9 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
 
     model, tokenizer = FastVisionModel.from_pretrained(
         args.model_name,
+        max_seq_length=args.max_seq_length,
         load_in_4bit=False,
+        load_in_16bit=True,
         use_gradient_checkpointing="unsloth",
         device_map=device_map,
     )
@@ -375,6 +378,7 @@ def build_trainer(
         "metric_for_best_model": "eval_loss",
         "greater_is_better": False,
         "save_total_limit": 2,
+        "run_name": args.mlflow_run_name,
         **precision_settings,
     }
 
@@ -433,7 +437,18 @@ def build_trainer(
 
 def main():
     args = parse_args()
-
+    
+    if args.report_to == "mlflow":
+        os.environ["MLFLOW_TRACKING_URI"] = args.mlflow_uri
+        os.environ["MLFLOW_EXPERIMENT_NAME"] = args.mlflow_experiment_name
+        
+        if args.mlflow_run_name:
+            os.environ["MLFLOW_RUN_NAME"] = args.mlflow_run_name
+        
+        mlflow.set_tracking_uri(args.mlflow_uri)
+        mlflow.set_experiment(args.mlflow_experiment_name)
+        print(f"✅ [Init] MLflow Configured: {args.mlflow_uri} | Exp: {args.mlflow_experiment_name}")
+            
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     rank = int(os.environ.get("RANK", 0))
@@ -477,6 +492,16 @@ def main():
         trainer_stats = trainer.train()
 
     if rank == 0:
+        metrics = trainer.evaluate()
+        final_eval_loss = metrics.get("eval_loss", float("inf"))
+        
+        print(f"📉 Final Eval Loss: {final_eval_loss}")
+
+        if args.metric_file:
+            import json
+            with open(args.metric_file, "w") as f:
+                json.dump({"eval_loss": final_eval_loss}, f)
+                
         print()
         print("✅ Training completed!")
         print(f"📊 Training stats: {trainer_stats}")
@@ -503,24 +528,18 @@ def main():
             print(f"⚠️ Failed to push to hub: {e}")
             
     if args.report_to == "mlflow" and rank == 0:        
-        mlflow.set_tracking_uri(args.mlflow_uri)
-        mlflow.set_experiment(args.mlflow_experiment_name)
+        print("📤 Uploading extra artifacts to MLflow...")
         
-        active_run = mlflow.active_run()
-        if active_run is None:
-            mlflow.start_run(run_name=args.mlflow_run_name)
-        
-        print("📤 Uploading model to MLflow...")
-        
-        if args.save_model:
-            model.save_pretrained(args.model_save_path)
-            tokenizer.save_pretrained(args.model_save_path)
-            mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
-        
-        mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
-        
-        mlflow.end_run()
-        print("✅ Model uploaded to MLflow!")
+        last_run = mlflow.last_active_run()
+        if last_run:
+            with mlflow.start_run(run_id=last_run.info.run_id):
+                if args.save_model:
+                    mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
+                
+                mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
+                print("✅ Artifacts uploaded to MLflow run:", last_run.info.run_id)
+        else:
+            print("⚠️ Could not find active MLflow run to upload artifacts.")
             
     if rank == 0:
         print("\n" + "=" * 70)

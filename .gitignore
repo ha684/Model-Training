@@ -51,4 +51,5 @@ Thumbs.db
 data/
 *.arrow
 hf_dataset
+mlflow.db
 mlartifacts/

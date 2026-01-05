@@ -1,134 +1,124 @@
-# hpo_runner.py
 import argparse
-import random
 import subprocess
-import time
-import math
+import os
+import json
+import optuna
+from optuna.integration.mlflow import MLflowCallback
 
-SEARCH_SPACE = {
-    "learning_rate": (1e-5, 5e-4, "log"), 
-    "lora_r": [16, 32, 64, 128],
-    "lora_alpha": [16, 32, 64, 128],
-    "lora_dropout": (0.0, 0.1),     
-    "grad_accum": [1,2, 4, 8, 16, 32],
-    "weight_decay": (0.0, 0.1),
-    "warmup_steps": (0, 100, "int"),
-}
+def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
+    """
+    Hàm này định nghĩa 1 lần chạy thử nghiệm (1 trial)
+    """
+    # 1. Định nghĩa không gian tìm kiếm bằng Optuna (Thay thế SEARCH_SPACE cũ)
+    # Optuna tự động gợi ý giá trị trong khoảng này
+    learning_rate = trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True)
+    lora_r = trial.suggest_categorical("lora_r", [16, 32, 64, 128])
+    lora_alpha = trial.suggest_categorical("lora_alpha", [16, 32, 64, 128])
+    lora_dropout = trial.suggest_float("lora_dropout", 0.0, 0.1)
+    grad_accum = trial.suggest_categorical("grad_accum", [1, 2, 4, 8])
+    weight_decay = trial.suggest_float("weight_decay", 0.0, 0.1)
+    # warmup_steps = trial.suggest_int("warmup_steps", 0, 20)
 
-def get_random_value(key, value):
-    if isinstance(value, list):
-        return random.choice(value)
+    # Tạo tên run
+    run_name = f"optuna_trial_{trial.number}_lr{learning_rate:.1e}_r{lora_r}_alpha{lora_alpha}"
     
-    if isinstance(value, tuple):
-        if len(value) == 3 and value[2] == "log":
-            min_val, max_val = value[0], value[1]
-            log_min, log_max = math.log10(min_val), math.log10(max_val)
-            return 10 ** random.uniform(log_min, log_max)
-        
-        elif len(value) == 3 and value[2] == "int":
-            return random.randint(value[0], value[1])
+    # File tạm để chứa kết quả loss từ training script
+    metric_filename = f"metric_trial_{trial.number}.json"
 
-        else:
-            return random.uniform(value[0], value[1])
-            
-    return value
+    print(f"\n{'=' * 20} STARTING TRIAL {trial.number} {'=' * 20}")
+    print(f"⚙️ Params: {trial.params}")
 
-def get_random_config():
-    return {k: get_random_value(k, v) for k, v in SEARCH_SPACE.items()}
+    # 2. Xây dựng câu lệnh (Thêm --metric_file)
+    cmd = [
+        "torchrun",
+        f"--nproc_per_node={args.num_gpus}",
+        "train_qwen3_vl_ddp.py",
+        "--model_name", "Qwen/Qwen3-VL-2B-Instruct",
+        "--report_to", "mlflow",
+        "--learning_rate", str(learning_rate),
+        "--lora_r", str(lora_r),
+        "--lora_alpha", str(lora_alpha),
+        "--lora_dropout", str(lora_dropout),
+        "--batch_size", "2",
+        "--grad_accum", str(grad_accum),
+        "--weight_decay", str(weight_decay),
+        "--warmup_steps", "5",
+        "--max_steps", "30", 
+        "--eval_steps", "5",
+        "--logging_steps", "1",
+        "--output_dir", f"outputs/hpo/{run_name}",
+        "--mlflow_uri", args.ngrok_url,
+        # Lưu ý: OptunaCallback sẽ tự log params, nên trong script con 
+        # ta có thể log vào experiment con hoặc để chung
+        "--mlflow_experiment_name", "qwen3_vl_optuna_details", 
+        "--mlflow_run_name", run_name,
+        "--dataset_name", args.dataset_name,
+        "--metric_file", metric_filename,
+    ]
+
+    if args.hf_token:
+        cmd.extend(["--hf_token", args.hf_token])
+
+    # 3. Chạy training script
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError:
+        print(f"❌ Trial {trial.number} FAILED.")
+        # Nếu fail, trả về loss thật lớn để Optuna biết đường tránh
+        return float("inf") 
+
+    # 4. Đọc kết quả từ file
+    eval_loss = float("inf")
+    if os.path.exists(metric_filename):
+        with open(metric_filename, "r") as f:
+            data = json.load(f)
+            eval_loss = data.get("eval_loss", float("inf"))
+        # Dọn dẹp file tạm
+        os.remove(metric_filename)
+    else:
+        print("⚠️ Metric file not found!")
+
+    print(f"🏁 Trial {trial.number} finished with Loss: {eval_loss}")
+    
+    # Optuna cần giá trị trả về để tối ưu (Minimize loss)
+    return eval_loss
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--num_trials", type=int, default=10, help="Số lượng thử nghiệm"
-    )
-    parser.add_argument(
-        "--ngrok_url", type=str, required=True, help="URL ngrok trỏ về MLflow local"
-    )
-    parser.add_argument("--num_gpus", type=int, default=2, help="Số GPU sử dụng")
-    parser.add_argument(
-        "--dataset_name", type=str, default="ha684/senko1", help="Dataset name"
-    )
-    parser.add_argument("--hf_token", type=str, default=None, help="HuggingFace token")
+    parser.add_argument("--num_trials", type=int, default=20)
+    parser.add_argument("--ngrok_url", type=str, required=True)
+    parser.add_argument("--num_gpus", type=int, default=2)
+    parser.add_argument("--dataset_name", type=str, default="ha684/senko1")
+    parser.add_argument("--hf_token", type=str, default=None)
     args = parser.parse_args()
 
-    print(f"\n🎯 Starting Random Search HPO with {args.num_trials} trials")
-    print(f"   - GPUs: {args.num_gpus}")
-    print(f"   - Dataset: {args.dataset_name}")
-    print(f"   - MLflow URI: {args.ngrok_url}")
-    print("=" * 80)
+    # Tích hợp MLflow để theo dõi quá trình Optuna chọn tham số
+    mlflow_cb = MLflowCallback(
+        tracking_uri=args.ngrok_url,
+        metric_name="eval_loss",
+        mlflow_kwargs={
+            "experiment_name": "qwen3_vl_optuna_coordinator" # Experiment cha
+        }
+    )
 
-    for i in range(args.num_trials):
-        config = get_random_config()
-        run_name = f"rs_trial_{i + 1}_lr{config['learning_rate']:.0e}_r{config['lora_r']}_steps100"
+    print(f"🎯 Starting Optuna HPO...")
 
-        print(f"\n{'=' * 20} STARTING TRIAL {i + 1}/{args.num_trials} {'=' * 20}")
-        print(f"⚙️ Config: {config}")
+    # Tạo Study: Hướng là MINIMIZE (vì chúng ta muốn giảm Loss)
+    study = optuna.create_study(
+        study_name="qwen3_vl_optimization",
+        direction="minimize",
+        pruner=optuna.pruners.MedianPruner() # Tùy chọn
+    )
 
-        cmd = [
-            "torchrun",
-            f"--nproc_per_node={args.num_gpus}",
-            "train_qwen3_vl_ddp.py",
-            "--model_name",
-            "Qwen/Qwen3-VL-2B-Instruct",
-            "--report_to",
-            "mlflow",
-            "--learning_rate",
-            str(config["learning_rate"]),
-            "--lora_r",
-            str(config["lora_r"]),
-            "--lora_alpha",
-            str(config["lora_alpha"]),
-            "--lora_dropout",
-            str(config["lora_dropout"]),
-            "--batch_size",
-            "4",
-            "--grad_accum",
-            str(config["grad_accum"]),
-            "--weight_decay",
-            str(config["weight_decay"]),
-            "--warmup_steps",
-            str(config["warmup_steps"]),
-            "--max_steps",
-            "100",
-            "--eval_steps",
-            "20",
-            "--logging_steps",
-            "1",
-            "--output_dir",
-            f"outputs/hpo/{run_name}",
-            "--mlflow_uri",
-            args.ngrok_url,
-            "--mlflow_experiment_name",
-            "qwen3_vl_random_search",
-            "--mlflow_run_name",
-            run_name,
-            "--dataset_name",
-            args.dataset_name,
-        ]
-
-        if args.hf_token:
-            cmd.extend(["--hf_token", args.hf_token])
-
-        try:
-            subprocess.run(cmd, check=True)
-            print(f"✅ Trial {i + 1} finished successfully.")
-        except subprocess.CalledProcessError:
-            print(
-                f"❌ Trial {i + 1} FAILED (likely OOM or training error). Skipping to next..."
-            )
-            continue
-        except KeyboardInterrupt:
-            print("\n⚠️ Interrupted by user. Stopping HPO...")
-            break
-
-        time.sleep(5)
+    # Bắt đầu tối ưu
+    # Dùng lambda để truyền `args` vào hàm objective
+    study.optimize(lambda trial: objective(trial, args), n_trials=args.num_trials, callbacks=[mlflow_cb])
 
     print("\n" + "=" * 80)
-    print("🏁 HPO Random Search Completed!")
-    print(f"📊 Check MLflow at {args.ngrok_url} to analyze results")
-    print("💡 Sort by 'eval_loss' to find the best model")
+    print("🏆 Best trial:")
+    print(f"  Value: {study.best_value}")
+    print(f"  Params: {study.best_params}")
     print("=" * 80)
-
 
 if __name__ == "__main__":
     main()

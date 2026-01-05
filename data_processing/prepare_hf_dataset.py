@@ -15,6 +15,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import sys
 from typing import Dict, List, Optional
 
 from datasets import Dataset, DatasetDict, Features, Value
@@ -22,6 +23,8 @@ from datasets import Image as HFImage
 from pdf2image import convert_from_path
 from PIL import Image
 from tqdm import tqdm
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 os.environ["HF_TOKEN"] = "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"
 # Configure logging
