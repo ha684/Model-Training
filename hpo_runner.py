@@ -1,9 +1,11 @@
 import argparse
-import subprocess
-import os
 import json
+import os
+import subprocess
+
 import optuna
 from optuna.integration.mlflow import MLflowCallback
+
 
 def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
     """
@@ -20,8 +22,10 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
     # warmup_steps = trial.suggest_int("warmup_steps", 0, 20)
 
     # Tạo tên run
-    run_name = f"optuna_trial_{trial.number}_lr{learning_rate:.1e}_r{lora_r}_alpha{lora_alpha}"
-    
+    run_name = (
+        f"optuna_trial_{trial.number}_lr{learning_rate:.1e}_r{lora_r}_alpha{lora_alpha}"
+    )
+
     # File tạm để chứa kết quả loss từ training script
     metric_filename = f"metric_trial_{trial.number}.json"
 
@@ -33,39 +37,56 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         "torchrun",
         f"--nproc_per_node={args.num_gpus}",
         "train_qwen3_vl_ddp.py",
-        "--model_name", "Qwen/Qwen3-VL-2B-Instruct",
-        "--report_to", "mlflow",
-        "--learning_rate", str(learning_rate),
-        "--lora_r", str(lora_r),
-        "--lora_alpha", str(lora_alpha),
-        "--lora_dropout", str(lora_dropout),
-        "--batch_size", "2",
-        "--grad_accum", str(grad_accum),
-        "--weight_decay", str(weight_decay),
-        "--warmup_steps", "5",
-        "--max_steps", "30", 
-        "--eval_steps", "5",
-        "--logging_steps", "1",
-        "--output_dir", f"outputs/hpo/{run_name}",
-        "--mlflow_uri", args.ngrok_url,
-        # Lưu ý: OptunaCallback sẽ tự log params, nên trong script con 
+        "--model_name",
+        "Qwen/Qwen3-VL-2B-Instruct",
+        "--report_to",
+        "mlflow",
+        "--learning_rate",
+        str(learning_rate),
+        "--lora_r",
+        str(lora_r),
+        "--lora_alpha",
+        str(lora_alpha),
+        "--lora_dropout",
+        str(lora_dropout),
+        "--batch_size",
+        "2",
+        "--grad_accum",
+        str(grad_accum),
+        "--weight_decay",
+        str(weight_decay),
+        "--warmup_steps",
+        "5",
+        "--max_steps",
+        "30",
+        "--eval_steps",
+        "10",
+        "--logging_steps",
+        "1",
+        "--output_dir",
+        f"outputs/hpo/{run_name}",
+        "--mlflow_uri",
+        args.ngrok_url,
+        # Lưu ý: OptunaCallback sẽ tự log params, nên trong script con
         # ta có thể log vào experiment con hoặc để chung
-        "--mlflow_experiment_name", "qwen3_vl_optuna_details", 
-        "--mlflow_run_name", run_name,
-        "--dataset_name", args.dataset_name,
-        "--metric_file", metric_filename,
+        "--mlflow_experiment_name",
+        "qwen3_vl_optuna_details",
+        "--mlflow_run_name",
+        run_name,
+        "--dataset_name",
+        args.dataset_name,
+        "--metric_file",
+        metric_filename,
     ]
 
     if args.hf_token:
         cmd.extend(["--hf_token", args.hf_token])
 
-    # 3. Chạy training script
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError:
         print(f"❌ Trial {trial.number} FAILED.")
-        # Nếu fail, trả về loss thật lớn để Optuna biết đường tránh
-        return float("inf") 
+        return float("inf")
 
     # 4. Đọc kết quả từ file
     eval_loss = float("inf")
@@ -79,9 +100,9 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         print("⚠️ Metric file not found!")
 
     print(f"🏁 Trial {trial.number} finished with Loss: {eval_loss}")
-    
-    # Optuna cần giá trị trả về để tối ưu (Minimize loss)
+
     return eval_loss
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -92,33 +113,57 @@ def main():
     parser.add_argument("--hf_token", type=str, default=None)
     args = parser.parse_args()
 
-    # Tích hợp MLflow để theo dõi quá trình Optuna chọn tham số
+    db_storage = "sqlite:///optuna_history.db"
+    study_name = "qwen3_vl_optimization"
+
     mlflow_cb = MLflowCallback(
         tracking_uri=args.ngrok_url,
         metric_name="eval_loss",
-        mlflow_kwargs={
-            "experiment_name": "qwen3_vl_optuna_coordinator" # Experiment cha
-        }
+        mlflow_kwargs={"experiment_name": "qwen3_vl_optuna_coordinator"},
     )
 
-    print(f"🎯 Starting Optuna HPO...")
+    print(f"🎯 Starting Optuna HPO with persistent storage: {db_storage}")
 
-    # Tạo Study: Hướng là MINIMIZE (vì chúng ta muốn giảm Loss)
     study = optuna.create_study(
-        study_name="qwen3_vl_optimization",
+        study_name=study_name,
+        storage=db_storage,
+        load_if_exists=True,
         direction="minimize",
-        pruner=optuna.pruners.MedianPruner() # Tùy chọn
+        pruner=optuna.pruners.MedianPruner(),
     )
 
-    # Bắt đầu tối ưu
-    # Dùng lambda để truyền `args` vào hàm objective
-    study.optimize(lambda trial: objective(trial, args), n_trials=args.num_trials, callbacks=[mlflow_cb])
+    completed_trials = len(
+        [
+            t
+            for t in study.trials
+            if t.state
+            in (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED)
+        ]
+    )
+
+    print(f"📊 Status: {completed_trials}/{args.num_trials} trials completed.")
+
+    if completed_trials >= args.num_trials:
+        print("✅ Study already finished! No new trials needed.")
+    else:
+        remaining_trials = args.num_trials - completed_trials
+        print(f"🚀 Resuming... Running {remaining_trials} more trials.")
+
+        study.optimize(
+            lambda trial: objective(trial, args),
+            n_trials=remaining_trials,  # Chỉ chạy số lượng còn thiếu
+            callbacks=[mlflow_cb],
+        )
 
     print("\n" + "=" * 80)
     print("🏆 Best trial:")
-    print(f"  Value: {study.best_value}")
-    print(f"  Params: {study.best_params}")
+    if study.best_trial:
+        print(f"  Value: {study.best_value}")
+        print(f"  Params: {study.best_params}")
+    else:
+        print("  No successful trials yet.")
     print("=" * 80)
+
 
 if __name__ == "__main__":
     main()

@@ -26,10 +26,12 @@ from torch.optim import AdamW
 from torch.utils.data import Dataset as TorchDataset
 from transformers import EarlyStoppingCallback, get_cosine_schedule_with_warmup
 from trl import SFTConfig, SFTTrainer
-
+import shutil
 
 from config.fields_config import get_extraction_prompt
 
+os.environ["NCCL_P2P_DISABLE"] = "1"
+os.environ["NCCL_IB_DISABLE"] = "1"
 
 def get_gpu_precision_settings() -> Dict[str, bool]:
     if not torch.cuda.is_available():
@@ -377,7 +379,7 @@ def build_trainer(
         "load_best_model_at_end": True,
         "metric_for_best_model": "eval_loss",
         "greater_is_better": False,
-        "save_total_limit": 2,
+        "save_total_limit": 1,
         "run_name": args.mlflow_run_name,
         **precision_settings,
     }
@@ -473,6 +475,7 @@ def main():
 
     if rank == 0:
         print("🔨 Building trainer...")
+        
     trainer = build_trainer(
         model, tokenizer, train_dataset, eval_dataset, args, world_size
     )
@@ -490,9 +493,14 @@ def main():
     except ImportError:
         print("⚠️  unsloth not available. Using trl's trainer.")
         trainer_stats = trainer.train()
-
+        
     if rank == 0:
-        metrics = trainer.evaluate()
+        trainer.args.report_to = []
+    
+    
+    metrics = trainer.evaluate()
+    
+    if rank == 0:
         final_eval_loss = metrics.get("eval_loss", float("inf"))
         
         print(f"📉 Final Eval Loss: {final_eval_loss}")
@@ -530,16 +538,44 @@ def main():
     if args.report_to == "mlflow" and rank == 0:        
         print("📤 Uploading extra artifacts to MLflow...")
         
-        last_run = mlflow.last_active_run()
-        if last_run:
-            with mlflow.start_run(run_id=last_run.info.run_id):
-                if args.save_model:
-                    mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
+        def upload_and_cleanup():
+            if 'metrics' in locals():
+                print(f"📊 Logging eval metrics directly to run...")
+                mlflow.log_metrics(metrics)
                 
-                mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
-                print("✅ Artifacts uploaded to MLflow run:", last_run.info.run_id)
+            if args.save_model:
+                mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
+            
+            # if os.path.exists(args.output_dir):
+            #     mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
+            
+            print("✅ Artifacts uploaded successfully!")
+
+            print("🧹 Cleaning up local disk to save space...")
+            try:
+                if os.path.exists(args.output_dir):
+                    shutil.rmtree(args.output_dir)
+                    print(f"   - Deleted: {args.output_dir}")
+                
+                if args.save_model and os.path.exists(args.model_save_path):
+                    shutil.rmtree(args.model_save_path)
+                    print(f"   - Deleted: {args.model_save_path}")
+                    
+            except Exception as e:
+                print(f"⚠️ Error during cleanup: {e}")
+
+        if mlflow.active_run():
+            print(f"🔗 Attaching to CURRENT active run: {mlflow.active_run().info.run_id}")
+            upload_and_cleanup()
+            mlflow.end_run()
         else:
-            print("⚠️ Could not find active MLflow run to upload artifacts.")
+            last_run = mlflow.last_active_run()
+            if last_run:
+                print(f"🔄 Re-opening LAST run: {last_run.info.run_id}")
+                with mlflow.start_run(run_id=last_run.info.run_id):
+                    upload_and_cleanup()
+            else:
+                print("⚠️ Could not find any MLflow run to upload artifacts.")
             
     if rank == 0:
         print("\n" + "=" * 70)
