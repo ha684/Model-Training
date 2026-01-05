@@ -30,6 +30,8 @@ from trl import SFTConfig, SFTTrainer
 
 from config.fields_config import get_extraction_prompt
 
+os.environ["NCCL_P2P_DISABLE"] = "1"
+os.environ["NCCL_IB_DISABLE"] = "1"
 
 def get_gpu_precision_settings() -> Dict[str, bool]:
     if not torch.cuda.is_available():
@@ -491,8 +493,9 @@ def main():
         print("⚠️  unsloth not available. Using trl's trainer.")
         trainer_stats = trainer.train()
 
+    metrics = trainer.evaluate()
+    
     if rank == 0:
-        metrics = trainer.evaluate()
         final_eval_loss = metrics.get("eval_loss", float("inf"))
         
         print(f"📉 Final Eval Loss: {final_eval_loss}")
