@@ -51,3 +51,4 @@ Thumbs.db
 data/
 *.arrow
 hf_dataset
+mlartifacts/
