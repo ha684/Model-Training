@@ -537,8 +537,8 @@ def main():
             if args.save_model:
                 mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
             
-            if os.path.exists(args.output_dir):
-                mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
+            # if os.path.exists(args.output_dir):
+            #     mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
             
             print("✅ Artifacts uploaded successfully!")
 
