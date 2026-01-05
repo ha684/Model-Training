@@ -51,45 +51,75 @@ CORE PRINCIPLES:
    - Avoid repetitive patterns or formulaic phrasing
    - Mix formal and casual Vietnamese styles naturally
 
-2. **Question Type Variety** (distribute across conversations, not all in one):
-   - Direct information retrieval (dates, codes, names, addresses)
-   - Quantitative queries (counts, totals, amounts)
-   - Comparative analysis (which has more/less, differences)
-   - Existence verification (is X present? does it contain Y?)
-   - Relational reasoning (connections between fields, implications)
-   - Clarification requests (units, specific details, confirmations)
+2. **Question Type Variety** (distribute across conversations, mix 2-3 types per conversation):
+   
+   **Basic Information Retrieval** (30-40% of questions):
+   - Direct lookups: dates, codes, names, addresses, phone numbers
+   - Field extraction: "Tên người mua hàng là gì?", "Địa chỉ giao hàng ở đâu?"
+   
+   **Advanced Question Types** (60-70% of questions):
+   
+   a) **Simple Arithmetic & Counting**:
+      - Count items: "Có bao nhiêu mặt hàng trong đơn?"
+      - Calculate totals: "Tổng số lượng là bao nhiêu?"
+      - Compare values: "Mặt hàng nào có số lượng nhiều nhất?"
+      - Verify sums: "Tổng tiền có đúng không?"
+   
+   b) **Negative Q/A (Câu hỏi phủ định)**:
+      - Ask about information NOT present in document (use in ~20% of conversations)
+      - Examples:
+        * "Có ghi chú về phí vận chuyển không?" (when not mentioned)
+        * "Có thông tin người nhận là công ty ABC không?" (wrong name)
+        * "Hóa đơn này có chiết khấu không?" (when no discount)
+      - Assistant should clearly state: "Không có thông tin về...", "Tài liệu không đề cập..."
+   
+   c) **Simple Relational Questions**:
+      - Connect 2 pieces of info: "Hàng giao đến địa chỉ nào và cho ai?"
+      - Check consistency: "Mã sản phẩm và tên sản phẩm có khớp nhau không?"
+      - Identify patterns: "Các mặt hàng này thuộc loại gì?"
+   
+   d) **Field Existence & Cross-reference**:
+      - Check if fields are present: "Có mã số thuế trong tài liệu không?"
+      - Verify data consistency: "Tên công ty ở header và ở chân trang có giống nhau không?"
+      - Match related fields: "Số điện thoại và địa chỉ liên hệ có cùng thuộc về người nhận không?"
 
 3. **Conversation Flow**
-   - Questions should build logically but unpredictably
-   - Later questions can reference earlier context
-   - Include both broad and narrow scopes
-   - Mix simple lookups with analytical questions
-   - Natural transitions between topics
+   - Start with 1-2 basic questions (lookups or counting)
+   - Include 1-2 questions that require light reasoning
+   - Optionally add 1 negative question to test model
+   - Questions can build on each other naturally
+   - Keep it realistic - people often mix simple and analytical questions
 
 4. **Answer Quality**
    - Base all answers STRICTLY on visible document information
+   - For negative questions: "Không thấy thông tin về...", "Tài liệu không có..."
+   - For calculations: give direct answer, optionally add brief explanation
    - Be precise with numbers, codes, and names
-   - If information is unclear or absent, acknowledge it naturally
-   - Use conversational but professional Vietnamese
-   - Provide complete, helpful responses without over-explaining
+   - Use conversational Vietnamese
+   - Keep answers concise and clear
 
 IMPORTANT GUIDELINES:
 
 ✓ DO:
-- Create unique, context-specific questions for each document type
+- Create realistic questions someone would actually ask
+- Mix basic lookups with light analytical questions
+- Include negative questions occasionally (20-30% of conversations)
 - Use natural Vietnamese with proper diacritics
-- Vary question lengths and complexity
-- Include domain-specific terminology where appropriate
-- Make questions that someone would genuinely ask
-- Allow natural conversation flow with occasional tangents
+- Make questions specific to the document type
+- Vary difficulty within 3-6 turns
 
 ✗ DON'T:
-- Use the same question templates repeatedly
-- Ask questions in predictable orders
-- Hallucinate information not in the document
-- Over-explain or be overly verbose
-- Use unnatural or robotic language
-- Force all question types into every conversation
+- Use overly complex multi-hop reasoning
+- Ask too many calculation questions in one conversation
+- Use robotic or template-like language
+- Hallucinate information not in document
+- Make every question a simple "X là gì?"
+- Over-explain answers
+
+DIFFICULTY DISTRIBUTION (aim for this balance):
+- 30-40%: Basic information retrieval (dates, names, codes)
+- 30-40%: Simple arithmetic or counting (totals, comparisons)
+- 20-30%: Negative Q/A or light verification
 
 OUTPUT FORMAT:
 Return a JSON object with this structure:
@@ -112,15 +142,14 @@ Return a JSON object with this structure:
 
 QUALITY CHECKLIST:
 - [ ] 3-6 conversation turns
-- [ ] Questions feel natural and varied
-- [ ] All answers are accurate and document-based
+- [ ] Mix of basic lookups and light analytical questions
+- [ ] Questions feel natural and conversational
+- [ ] All answers accurate and document-based
 - [ ] Proper Vietnamese language throughout
-- [ ] Logical but non-formulaic conversation flow
-- [ ] No information fabrication
+- [ ] At least 1 question beyond simple lookup
+- [ ] No hallucinated information
 - [ ] Valid JSON format
-- [ ] Questions specific to this document's context
-
-Generate a high-quality, realistic conversation now:"""
+"""
 
     return prompt
 
