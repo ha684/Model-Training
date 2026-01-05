@@ -59,12 +59,10 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
     if args.hf_token:
         cmd.extend(["--hf_token", args.hf_token])
 
-    # 3. Chạy training script
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError:
         print(f"❌ Trial {trial.number} FAILED.")
-        # Nếu fail, trả về loss thật lớn để Optuna biết đường tránh
         return float("inf") 
 
     # 4. Đọc kết quả từ file
@@ -80,7 +78,6 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
 
     print(f"🏁 Trial {trial.number} finished with Loss: {eval_loss}")
     
-    # Optuna cần giá trị trả về để tối ưu (Minimize loss)
     return eval_loss
 
 def main():
@@ -92,22 +89,20 @@ def main():
     parser.add_argument("--hf_token", type=str, default=None)
     args = parser.parse_args()
 
-    # Tích hợp MLflow để theo dõi quá trình Optuna chọn tham số
     mlflow_cb = MLflowCallback(
         tracking_uri=args.ngrok_url,
         metric_name="eval_loss",
         mlflow_kwargs={
-            "experiment_name": "qwen3_vl_optuna_coordinator" # Experiment cha
+            "experiment_name": "qwen3_vl_optuna_coordinator"
         }
     )
 
     print(f"🎯 Starting Optuna HPO...")
 
-    # Tạo Study: Hướng là MINIMIZE (vì chúng ta muốn giảm Loss)
     study = optuna.create_study(
         study_name="qwen3_vl_optimization",
         direction="minimize",
-        pruner=optuna.pruners.MedianPruner() # Tùy chọn
+        pruner=optuna.pruners.MedianPruner()
     )
 
     # Bắt đầu tối ưu

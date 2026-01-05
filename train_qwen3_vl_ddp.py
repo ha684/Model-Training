@@ -26,7 +26,7 @@ from torch.optim import AdamW
 from torch.utils.data import Dataset as TorchDataset
 from transformers import EarlyStoppingCallback, get_cosine_schedule_with_warmup
 from trl import SFTConfig, SFTTrainer
-
+import shutil
 
 from config.fields_config import get_extraction_prompt
 
@@ -379,7 +379,7 @@ def build_trainer(
         "load_best_model_at_end": True,
         "metric_for_best_model": "eval_loss",
         "greater_is_better": False,
-        "save_total_limit": 2,
+        "save_total_limit": 1,
         "run_name": args.mlflow_run_name,
         **precision_settings,
     }
@@ -533,23 +533,38 @@ def main():
     if args.report_to == "mlflow" and rank == 0:        
         print("📤 Uploading extra artifacts to MLflow...")
         
-        def log_custom_artifacts():
+        def upload_and_cleanup():
             if args.save_model:
                 mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
-            mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
+            
+            if os.path.exists(args.output_dir):
+                mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
+            
             print("✅ Artifacts uploaded successfully!")
+
+            print("🧹 Cleaning up local disk to save space...")
+            try:
+                if os.path.exists(args.output_dir):
+                    shutil.rmtree(args.output_dir)
+                    print(f"   - Deleted: {args.output_dir}")
+                
+                if args.save_model and os.path.exists(args.model_save_path):
+                    shutil.rmtree(args.model_save_path)
+                    print(f"   - Deleted: {args.model_save_path}")
+                    
+            except Exception as e:
+                print(f"⚠️ Error during cleanup: {e}")
 
         if mlflow.active_run():
             print(f"🔗 Attaching to CURRENT active run: {mlflow.active_run().info.run_id}")
-            log_custom_artifacts()
-            mlflow.end_run() 
-            
+            upload_and_cleanup()
+            mlflow.end_run()
         else:
             last_run = mlflow.last_active_run()
             if last_run:
                 print(f"🔄 Re-opening LAST run: {last_run.info.run_id}")
                 with mlflow.start_run(run_id=last_run.info.run_id):
-                    log_custom_artifacts()
+                    upload_and_cleanup()
             else:
                 print("⚠️ Could not find any MLflow run to upload artifacts.")
             
