@@ -533,16 +533,25 @@ def main():
     if args.report_to == "mlflow" and rank == 0:        
         print("📤 Uploading extra artifacts to MLflow...")
         
-        last_run = mlflow.last_active_run()
-        if last_run:
-            with mlflow.start_run(run_id=last_run.info.run_id):
-                if args.save_model:
-                    mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
-                
-                mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
-                print("✅ Artifacts uploaded to MLflow run:", last_run.info.run_id)
+        def log_custom_artifacts():
+            if args.save_model:
+                mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
+            mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
+            print("✅ Artifacts uploaded successfully!")
+
+        if mlflow.active_run():
+            print(f"🔗 Attaching to CURRENT active run: {mlflow.active_run().info.run_id}")
+            log_custom_artifacts()
+            mlflow.end_run() 
+            
         else:
-            print("⚠️ Could not find active MLflow run to upload artifacts.")
+            last_run = mlflow.last_active_run()
+            if last_run:
+                print(f"🔄 Re-opening LAST run: {last_run.info.run_id}")
+                with mlflow.start_run(run_id=last_run.info.run_id):
+                    log_custom_artifacts()
+            else:
+                print("⚠️ Could not find any MLflow run to upload artifacts.")
             
     if rank == 0:
         print("\n" + "=" * 70)
