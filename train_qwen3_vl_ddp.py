@@ -475,6 +475,7 @@ def main():
 
     if rank == 0:
         print("🔨 Building trainer...")
+        
     trainer = build_trainer(
         model, tokenizer, train_dataset, eval_dataset, args, world_size
     )
@@ -492,7 +493,11 @@ def main():
     except ImportError:
         print("⚠️  unsloth not available. Using trl's trainer.")
         trainer_stats = trainer.train()
-
+        
+    if rank == 0:
+        trainer.args.report_to = []
+    
+    
     metrics = trainer.evaluate()
     
     if rank == 0:
@@ -534,6 +539,10 @@ def main():
         print("📤 Uploading extra artifacts to MLflow...")
         
         def upload_and_cleanup():
+            if 'metrics' in locals():
+                print(f"📊 Logging eval metrics directly to run...")
+                mlflow.log_metrics(metrics)
+                
             if args.save_model:
                 mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
             
