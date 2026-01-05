@@ -88,7 +88,10 @@ def main():
     parser.add_argument("--dataset_name", type=str, default="ha684/senko1")
     parser.add_argument("--hf_token", type=str, default=None)
     args = parser.parse_args()
-
+    
+    db_storage = "sqlite:///optuna_history.db" 
+    study_name = "qwen3_vl_optimization"
+    
     mlflow_cb = MLflowCallback(
         tracking_uri=args.ngrok_url,
         metric_name="eval_loss",
@@ -97,22 +100,39 @@ def main():
         }
     )
 
-    print(f"🎯 Starting Optuna HPO...")
+    print(f"🎯 Starting Optuna HPO with persistent storage: {db_storage}")
 
     study = optuna.create_study(
-        study_name="qwen3_vl_optimization",
+        study_name=study_name,
+        storage=db_storage,
+        load_if_exists=True,
         direction="minimize",
         pruner=optuna.pruners.MedianPruner()
     )
 
-    # Bắt đầu tối ưu
-    # Dùng lambda để truyền `args` vào hàm objective
-    study.optimize(lambda trial: objective(trial, args), n_trials=args.num_trials, callbacks=[mlflow_cb])
+    completed_trials = len([t for t in study.trials if t.state in (optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED)])
+    
+    print(f"📊 Status: {completed_trials}/{args.num_trials} trials completed.")
+
+    if completed_trials >= args.num_trials:
+        print("✅ Study already finished! No new trials needed.")
+    else:
+        remaining_trials = args.num_trials - completed_trials
+        print(f"🚀 Resuming... Running {remaining_trials} more trials.")
+        
+        study.optimize(
+            lambda trial: objective(trial, args), 
+            n_trials=remaining_trials,  # Chỉ chạy số lượng còn thiếu
+            callbacks=[mlflow_cb]
+        )
 
     print("\n" + "=" * 80)
     print("🏆 Best trial:")
-    print(f"  Value: {study.best_value}")
-    print(f"  Params: {study.best_params}")
+    if study.best_trial:
+        print(f"  Value: {study.best_value}")
+        print(f"  Params: {study.best_params}")
+    else:
+        print("  No successful trials yet.")
     print("=" * 80)
 
 if __name__ == "__main__":
