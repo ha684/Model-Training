@@ -13,11 +13,11 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
     """
     # 1. Định nghĩa không gian tìm kiếm bằng Optuna (Thay thế SEARCH_SPACE cũ)
     # Optuna tự động gợi ý giá trị trong khoảng này
-    learning_rate = trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True)
-    lora_r = trial.suggest_categorical("lora_r", [16, 32, 64, 128])
-    lora_alpha = trial.suggest_categorical("lora_alpha", [16, 32, 64, 128])
-    lora_dropout = trial.suggest_float("lora_dropout", 0.0, 0.1)
-    grad_accum = trial.suggest_categorical("grad_accum", [1, 2, 4, 8])
+    learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-3, log=True)
+    lora_r = trial.suggest_categorical("lora_r", [32, 64, 128])
+    lora_alpha = trial.suggest_categorical("lora_alpha", [64, 128, 256])
+    # lora_dropout = trial.suggest_float("lora_dropout", 0.0, 0.1)
+    grad_accum = trial.suggest_categorical("grad_accum", [1, 2])
     weight_decay = trial.suggest_float("weight_decay", 0.0, 0.1)
     # warmup_steps = trial.suggest_int("warmup_steps", 0, 20)
 
@@ -48,7 +48,7 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
         "--lora_alpha",
         str(lora_alpha),
         "--lora_dropout",
-        str(lora_dropout),
+        "0",
         "--batch_size",
         "2",
         "--grad_accum",
