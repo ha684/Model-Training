@@ -277,7 +277,7 @@ echo "======================================================="
 echo ""
 
 # Build command
-CMD="torchrun --nproc_per_node=$NUM_GPUS qwen3-vl/train_qwen3_vl_ddp.py \
+CMD="torchrun --nproc_per_node=$NUM_GPUS qwen3_vl/train_qwen3_vl_ddp.py \
     --model_name $MODEL_NAME \
     --max_seq_length $MAX_SEQ_LENGTH \
     --dataset_name $DATASET_NAME \
