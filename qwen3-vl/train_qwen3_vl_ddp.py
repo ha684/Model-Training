@@ -28,7 +28,7 @@ from trl import SFTConfig, SFTTrainer
 import shutil
 import torch.distributed as dist
 
-from config.fields_config import get_extraction_prompt
+from ..config.fields_config import get_extraction_prompt
 from .utils import LazyVisionDataset
 
 os.environ["NCCL_P2P_DISABLE"] = "1"
