@@ -16,6 +16,9 @@ Usage:
 import argparse
 import os
 from typing import Any, Dict, Tuple
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
@@ -28,7 +31,7 @@ from trl import SFTConfig, SFTTrainer
 import shutil
 import torch.distributed as dist
 
-from ..config.fields_config import get_extraction_prompt
+from config.fields_config import get_extraction_prompt
 from .utils import LazyVisionDataset
 
 os.environ["NCCL_P2P_DISABLE"] = "1"
