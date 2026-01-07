@@ -36,7 +36,7 @@ def objective(trial: optuna.Trial, args: argparse.Namespace) -> float:
     cmd = [
         "torchrun",
         f"--nproc_per_node={args.num_gpus}",
-        "train_qwen3_vl_ddp.py",
+        "qwen3-vl/train_qwen3_vl_ddp.py",
         "--model_name",
         "Qwen/Qwen3-VL-2B-Instruct",
         "--report_to",
@@ -151,7 +151,7 @@ def main():
 
         study.optimize(
             lambda trial: objective(trial, args),
-            n_trials=remaining_trials,  # Chỉ chạy số lượng còn thiếu
+            n_trials=remaining_trials,
             callbacks=[mlflow_cb],
         )
 

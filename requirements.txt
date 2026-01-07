@@ -1,40 +1,9 @@
-# Core dependencies for Qwen3-VL fine-tuning
-torch>=2.0.0
-torchvision>=0.15.0
-torchaudio>=2.0.0
-
-# Unsloth and related
-unsloth>=2025.9.6
-# unsloth-zoo>=2025.9.8
-
-# HuggingFace ecosystem
-transformers>=4.51.3
-datasets>=3.4.1
-accelerate>=0.34.1
-peft>=0.7.1
-huggingface_hub>=0.34.0
-tokenizers>=0.21
-
-# Training
-trl>=0.18.2
-bitsandbytes>=0.45.5
-
-# Optional: Multi-GPU optimization
-# git+https://github.com/anhvth/opensloth.git
-
-# Utilities
-numpy
-pandas
+unsloth
 pillow
 tqdm
 psutil
-
-# Optional: Logging and monitoring
 tensorboard
-# wandb
-
-# Optional: Development
-# jupyter
-# ipykernel
-# matplotlib
-
+mlflow
+optuna
+optuna-integration[mlflow]
+dagshub

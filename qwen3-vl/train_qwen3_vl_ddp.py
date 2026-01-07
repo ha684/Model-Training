@@ -1,4 +1,4 @@
-# train_qwen3_vl_ddp.py
+# qwen3-vl/train_qwen3_vl_ddp.py
 #!/usr/bin/env python3
 """
 Fine-tune Qwen3-VL Vision Language Model with Multi-GPU support using OpenSloth + Unsloth
@@ -23,12 +23,13 @@ import mlflow
 import torch
 from datasets import load_dataset
 from torch.optim import AdamW
-from torch.utils.data import Dataset as TorchDataset
 from transformers import EarlyStoppingCallback, get_cosine_schedule_with_warmup
 from trl import SFTConfig, SFTTrainer
 import shutil
+import torch.distributed as dist
 
 from config.fields_config import get_extraction_prompt
+from .utils import LazyVisionDataset
 
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
@@ -289,36 +290,6 @@ def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
     )
 
     return optimizer, scheduler
-
-def convert_to_conversation(sample: Dict, instruction: str) -> Dict:
-    conversation = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": instruction},
-                {"type": "image", "image": sample["image"]},
-            ],
-        },
-        {
-            "role": "assistant",
-            "content": [{"type": "text", "text": sample["text"]}],
-        },
-    ]
-    return {"messages": conversation}
-
-
-class LazyVisionDataset(TorchDataset):
-    def __init__(self, hf_dataset, instruction: str):
-        self.dataset = hf_dataset
-        self.instruction = instruction
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        sample = self.dataset[idx]
-        return convert_to_conversation(sample, self.instruction)
-
 
 def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
     if local_rank == 0:
@@ -582,6 +553,8 @@ def main():
         print("🎉 All done! Happy training! 🦥⚡")
         print("=" * 70)
 
-
+    if dist.is_initialized():
+        dist.destroy_process_group()
+            
 if __name__ == "__main__":
     main()

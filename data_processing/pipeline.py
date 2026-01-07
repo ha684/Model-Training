@@ -72,12 +72,6 @@ def validate_and_normalize_result(result: dict) -> dict:
 
     return normalized
 
-
-# ============================================================================
-# Main Processing
-# ============================================================================
-
-
 def extract_from_image(
     image: Image.Image,
     model: genai.GenerativeModel,
@@ -88,14 +82,11 @@ def extract_from_image(
     """Extract data from a single image using Gemini."""
     for attempt in range(max_retries):
         try:
-            # Wait for rate limit before making request
             key_manager.wait_for_rate_limit()
 
             response = model.generate_content([prompt, image])
 
-            # Record the request for rate limiting
             if not key_manager.record_request():
-                # Daily limit reached, trigger key rotation
                 raise Exception("Daily request limit reached for this API key")
 
             if response.text:
@@ -108,7 +99,6 @@ def extract_from_image(
         except Exception as e:
             error_msg = str(e).lower()
 
-            # Check for quota/rate limit errors
             if (
                 "quota" in error_msg
                 or "rate" in error_msg
@@ -116,7 +106,7 @@ def extract_from_image(
                 or "daily" in error_msg
             ):
                 logger.warning(f"Rate/quota limit hit: {e}")
-                raise  # Re-raise to trigger key rotation
+                raise
 
             # Check for invalid API key
             if (
@@ -125,7 +115,7 @@ def extract_from_image(
                 or "unauthorized" in error_msg
             ):
                 logger.warning(f"API key error: {e}")
-                raise  # Re-raise to trigger key rotation
+                raise
 
             logger.warning(f"Attempt {attempt + 1} failed: {e}")
 
