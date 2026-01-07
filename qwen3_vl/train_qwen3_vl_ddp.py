@@ -302,7 +302,7 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, An
         os.environ["HF_TOKEN"] = args.hf_token
 
     train_dataset = load_dataset(args.dataset_name, split="train")
-    eval_dataset = load_dataset(args.dataset_name, split="validation")
+    eval_dataset = load_dataset(args.dataset_name, split="test")
 
     if local_rank == 0:
         print(f"✅ Found {len(train_dataset)} training samples")
