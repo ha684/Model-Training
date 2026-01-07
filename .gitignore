@@ -54,3 +54,4 @@ hf_dataset
 mlflow.db
 mlartifacts/
 merged_dataset/
+.env

@@ -13,10 +13,9 @@ import json
 import logging
 import os
 import random
-import math
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
-
+import albumentations as A
+import numpy as np
 # Cấu hình để tối ưu I/O trên Windows
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["HF_DATASETS_TRUST_REMOTE_CODE"] = "1" 
@@ -55,6 +54,31 @@ GLOBAL_FEATURES = Features({
 # ==========================================
 # CÁC HÀM XỬ LÝ ẢNH LOCAL
 # ==========================================
+doc_aug_pipeline = A.Compose([
+    # 1. Giả lập chất lượng ảnh kém (Noise, Blur, Compression)
+    A.OneOf([
+        A.GaussNoise(std_range=(0.04, 0.20), mean_range=(0.0, 0.0), p=0.5),  # std_range thay vì var_limit
+        A.GaussianBlur(blur_limit=(3, 5), p=0.5),
+        A.ImageCompression(quality_range=(50, 85), p=0.5),  # quality_range thay vì quality_lower/upper
+    ], p=0.5),
+    
+    # 2. Giả lập ánh sáng/màu mực (Sáng tối, Tương phản)
+    A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+    
+    # 3. Giả lập scan lệch (chỉ xoay rất nhẹ +/- 5 độ, fill viền bằng màu trắng 255)
+    A.SafeRotate(limit=5, border_mode=0, fill=255, p=0.3),  # fill thay vì value/fill_value
+])
+
+def apply_augment(pil_img):
+    """Hàm helper để áp dụng albumentations lên PIL Image"""
+    # Convert PIL -> Numpy
+    img_arr = np.array(pil_img)
+    
+    # Apply Augmentation
+    augmented = doc_aug_pipeline(image=img_arr)["image"]
+    
+    # Convert back Numpy -> PIL
+    return Image.fromarray(augmented)
 
 def extract_page_from_pdf(pdf_path: str, page_number: int, output_dir: str, dpi: int = 200) -> str:
     try:
@@ -68,8 +92,6 @@ def extract_page_from_pdf(pdf_path: str, page_number: int, output_dir: str, dpi:
         images = convert_from_path(pdf_path, dpi=dpi, first_page=page_number, last_page=page_number)
         if images:
             img = images[0]
-            if min(img.size) > 2000: 
-                img.thumbnail((2000, 2000))
             img.save(output_path, format="PNG")
             img.close()
             return output_path
@@ -117,6 +139,57 @@ def transform_production(batch):
         "is_multiturn": [False] * n
     }
 
+def transform_production_with_aug(batch):
+    """
+    Input: Batch size N
+    Output: Batch size N * 3 (1 Original + 2 Augmented)
+    """
+    out_imgs = []
+    out_texts = []
+    out_sources = []
+    out_pages = []
+    out_multiturn = []
+
+    # Iterate qua từng mẫu trong batch
+    for img, txt, src in zip(batch["image"], batch["text"], range(len(batch["image"]))):
+        
+        # 1. Đảm bảo ảnh gốc là RGB
+        if img.mode != "RGB":
+            original_img = img.convert("RGB")
+        else:
+            original_img = img
+
+        # --- COPY 1: ORIGINAL (Giữ nguyên vẹn để mô hình học cái chuẩn) ---
+        out_imgs.append(original_img)
+        out_texts.append(txt)
+        out_sources.append(f"prod_orig_{src}")
+        out_pages.append(1)
+        out_multiturn.append(False)
+
+        # --- COPY 2: AUGMENTATION 1 (Biến thể 1) ---
+        aug_img_1 = apply_augment(original_img)
+        out_imgs.append(aug_img_1)
+        out_texts.append(txt) # Text giữ nguyên, chỉ đổi ảnh
+        out_sources.append(f"prod_aug1_{src}")
+        out_pages.append(1)
+        out_multiturn.append(False)
+
+        # --- COPY 3: AUGMENTATION 2 (Biến thể 2) ---
+        aug_img_2 = apply_augment(original_img)
+        out_imgs.append(aug_img_2)
+        out_texts.append(txt)
+        out_sources.append(f"prod_aug2_{src}")
+        out_pages.append(1)
+        out_multiturn.append(False)
+    
+    return {
+        "image": out_imgs,
+        "text": out_texts,
+        "source_file": out_sources,
+        "page_number": out_pages,
+        "is_multiturn": out_multiturn
+    }
+    
 def transform_vintern(batch):
     imgs = []
     for img in batch["image"]:
@@ -241,9 +314,9 @@ def main():
     
     logger.info("Mapping and Casting production data...")
     ds_prod_train = ds_prod_train.map(
-        transform_production, 
+        transform_production_with_aug,
         batched=True, 
-        batch_size=100, 
+        batch_size=20,
         remove_columns=[c for c in ds_prod_train.column_names if c not in common_cols]
     ).cast(GLOBAL_FEATURES)
 
@@ -313,22 +386,16 @@ def main():
     # 3. MERGE & BALANCE (CUSTOM STRATEGY)
     logger.info("--- Balancing Datasets ---")
     
-    n_prod = len(ds_prod_train)
+    n_prod_train = len(ds_prod_train)
     n_local = len(ds_local)
     
-    logger.info(f"Production count: {n_prod}")
+    logger.info(f"Production count: {n_prod_train}")
     logger.info(f"Local Conversations count: {n_local}")
     
-    # A. UPSAMPLE PRODUCTION 3X
-    UPSAMPLE_FACTOR = 3
-    logger.info(f"Upsampling Production by {UPSAMPLE_FACTOR}x")
-    ds_prod_balanced = concatenate_datasets([ds_prod_train] * UPSAMPLE_FACTOR)
-    n_prod_balanced = len(ds_prod_balanced)
-    
     # B. CALCULATE QUOTA FOR OTHERS
-    # n_prod_balanced / total = 0.65 -> total = n_prod_balanced / 0.65
-    target_total = int(n_prod_balanced / args.production_ratio)
-    target_others_total = target_total - n_prod_balanced
+    # n_prod_train / total = 0.65 -> total = n_prod_train / 0.65
+    target_total = int(n_prod_train / args.production_ratio)
+    target_others_total = target_total - n_prod_train
     
     logger.info(f"Target Total: ~{target_total}")
     logger.info(f"Target 'Others' Quota: {target_others_total}")
@@ -363,7 +430,7 @@ def main():
         ds_others_balanced = concatenate_datasets([ds_local, ds_vintern_sampled, ds_legal_sampled])
 
     # D. FINAL MERGE
-    ds_train_final = concatenate_datasets([ds_prod_balanced, ds_others_balanced])
+    ds_train_final = concatenate_datasets([ds_prod_train, ds_others_balanced])
 
     # 4. SHUFFLE & SAVE
     logger.info("--- Finalizing ---")

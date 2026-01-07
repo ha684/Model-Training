@@ -25,36 +25,28 @@ def convert_to_conversation(sample: Dict, instruction: str) -> Dict:
             ]
             return {"messages": conversation}
 
-        # 2. Xử lý Multi-turn Data
         text_data = sample["text"]
         raw_data = json.loads(text_data) if isinstance(text_data, str) else text_data
-        
-        # --- BƯỚC 2.1: NORMALIZATION (QUAN TRỌNG) ---
-        # Chuyển mọi format (User/Assistant pair, ShareGPT, v.v.) về chuẩn OpenAI
+
         conversation = []
         
         for item in raw_data:
-            # Case A: Format cặp "user" & "assistant" (như lỗi bạn gặp)
             if "user" in item and "assistant" in item:
                 conversation.append({"role": "user", "content": item["user"]})
                 conversation.append({"role": "assistant", "content": item["assistant"]})
             
-            # Case B: Format chuẩn "role" & "content" hoặc ShareGPT "from" & "value"
             elif "role" in item or "from" in item:
                 role = item.get("role", item.get("from", "")).lower()
                 content = item.get("content", item.get("value", ""))
                 
-                # Map tên role lạ về chuẩn
                 if role == "human": role = "user"
                 if role == "gpt": role = "assistant"
                 
                 conversation.append({"role": role, "content": content})
             
             else:
-                # Nếu không thuộc format nào -> Data rác thực sự -> Crash để báo
                 raise ValueError(f"Unknown conversation format keys: {list(item.keys())}")
 
-        # --- BƯỚC 2.2: CHÈN ẢNH VÀO TURN USER ĐẦU TIÊN ---
         image_added = False
         
         for message in conversation:
@@ -67,7 +59,6 @@ def convert_to_conversation(sample: Dict, instruction: str) -> Dict:
                         {"type": "image", "image": image}
                     ]
                 elif isinstance(current_content, list):
-                    # Tránh duplicate ảnh nếu chạy lại nhiều lần
                     if not any(x.get("type") == "image" for x in current_content):
                         message["content"].append({"type": "image", "image": image})
                 
@@ -80,7 +71,6 @@ def convert_to_conversation(sample: Dict, instruction: str) -> Dict:
         return {"messages": conversation}
 
     except Exception as e:
-        # Giữ nguyên phần Debug in lỗi cực mạnh này, nó rất hữu ích
         print("\n" + "="*60)
         print(f"❌ FATAL ERROR DETECTED: {e}")
         print(f"❌ Source File: {sample.get('source_file', 'Unknown')}")

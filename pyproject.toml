@@ -16,4 +16,6 @@ dependencies = [
     "optuna>=4.6.0",
     "optuna-integration[mlflow]>=4.6.0",
     "hf-xet>=1.2.0",
+    "albumentations>=2.0.8",
+    "langchain-openai>=1.1.6",
 ]
