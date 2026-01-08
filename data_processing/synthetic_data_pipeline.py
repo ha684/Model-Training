@@ -8,7 +8,7 @@ This pipeline:
 3. Outputs in ShareGPT format (user/assistant multi-turn conversation)
 
 Usage:
-    python synthetic_data_pipeline.py --input ./data --output ./output/synthetic_sharegpt.json --api-keys ./api_keys.txt
+    python data_processing/synthetic_data_pipeline.py --input ./data --output ./output/synthetic_sharegpt.json --api-keys ./api_keys.txt
 """
 
 import argparse
@@ -258,15 +258,14 @@ def extract_with_gemini_multiturn(
     max_retries: int = 3
 ) -> Optional[List[str]]:
     """
-    Pass 2: Use Gemini's native multi-turn conversation to answer prompts.
-    Returns list of assistant responses (one per turn).
+    Pass 2: Use Gemini generate_content purely (Stateless) mimicking chat.
     """
     assistant_responses = []
     
-    # Start a chat session with the image
-    chat = model.start_chat(history=[])
+    # Lịch sử chat thủ công
+    # Cấu trúc: [User(Image, Text), Model(Text), User(Text), Model(Text)...]
+    history_contents = [] 
     
-    # System instruction for all turns
     system_instruction = """IMPORTANT:
 - Return ONLY valid JSON format
 - For fields that exist in the document: extract actual value
@@ -274,65 +273,54 @@ def extract_with_gemini_multiturn(
 - Do NOT hallucinate or make up missing data
 - Consider context from previous turns in this conversation
 - If asked to modify/reformat previous data, do so accordingly"""
-    
+
     for turn_idx, user_prompt in enumerate(turns, 1):
         logger.info(f"    Turn {turn_idx}/{len(turns)}: Getting response...")
         
-        if turn_idx == 1:
-            message_content = [
-                image,
-                f"{user_prompt}\n\n{system_instruction}"
-            ]
-        else:
-            message_content = f"{user_prompt}\n\n{system_instruction}"
+        current_prompt = f"{user_prompt}\n\n{system_instruction}"
         
-        # Make API call with retry logic
-        success = False
+        if turn_idx == 1:
+            user_content = {
+                "role": "user",
+                "parts": [image, current_prompt]
+            }
+        else:
+            user_content = {
+                "role": "user",
+                "parts": [current_prompt]
+            }
+            
+        history_contents.append(user_content)
+
+        response_text = None
         for attempt in range(max_retries):
             try:
                 key_manager.wait_for_rate_limit()
                 
-                response = chat.send_message(message_content)
+                response = model.generate_content(history_contents)
                 
-                if not key_manager.record_request():
-                    raise Exception("Daily request limit reached for this API key")
+                if key_manager.record_request():
+                    pass
                 
                 if response.text:
-                    cleaned_response = parse_gemini_response(response.text)
-                    if cleaned_response:
-                        assistant_responses.append(cleaned_response)
-                        logger.info(f"    ✓ Turn {turn_idx} completed")
-                        success = True
+                    response_text = parse_gemini_response(response.text)
+                    if response_text:
                         break
-                
-                logger.warning(f"Empty or invalid response on attempt {attempt + 1}")
-                
             except Exception as e:
-                error_msg = str(e).lower()
-                
-                if (
-                    "quota" in error_msg
-                    or "rate" in error_msg
-                    or "limit" in error_msg
-                    or "daily" in error_msg
-                    or "api key" in error_msg
-                    or "invalid" in error_msg
-                    or "unauthorized" in error_msg
-                ):
-                    # Let the outer handler deal with API issues
-                    raise
-                
-                logger.warning(f"Turn {turn_idx} attempt {attempt + 1} failed: {e}")
-                
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-        
-        if not success:
-            logger.error(f"Failed to get response for turn {turn_idx}")
-            return None
-    
-    return assistant_responses
+                logger.warning(f"Turn {turn_idx} failed attempt {attempt}: {e}")
+                time.sleep(5 * (attempt + 1))
 
+        if not response_text:
+            return None
+
+        assistant_responses.append(response_text)
+        
+        history_contents.append({
+            "role": "model",
+            "parts": [response_text]
+        })
+
+    return assistant_responses
 
 def append_sharegpt_conversation(conversation: Dict, output_path: str):
     """Append a ShareGPT conversation to the output file."""
@@ -588,7 +576,7 @@ def run_synthetic_pipeline(
             
             try:
                 genai.configure(api_key=current_key)
-                gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+                gemini_model = genai.GenerativeModel("gemini-3-flash-preview")
                 
                 success = process_file(
                     file_path=file_path,
@@ -648,10 +636,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python synthetic_data_pipeline.py --input ./data --output ./output/sharegpt_multiturn.json --api-keys ./gemini_keys.txt
+  python data_processing/synthetic_data_pipeline.py --input ./data --output ./output/sharegpt_multiturn.json --api-keys ./gemini_keys.txt
   
   # Using environment variables from .env file:
-  python synthetic_data_pipeline.py -i ./data -o ./sharegpt_multiturn.json -k ./keys.txt
+  python data_processing/synthetic_data_pipeline.py -i ./data -o ./sharegpt_multiturn.json -k ./keys.txt
         """,
     )
     

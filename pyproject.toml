@@ -18,4 +18,5 @@ dependencies = [
     "hf-xet>=1.2.0",
     "albumentations>=2.0.8",
     "langchain-openai>=1.1.6",
+    "google-genai>=1.57.0",
 ]

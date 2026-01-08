@@ -1,29 +1,22 @@
-from langchain_openai import ChatOpenAI
+from google import genai
 import os
-from dotenv import load_dotenv
-from PIL import Image
-from langchain_core.messages import HumanMessage
-import base64
-from io import BytesIO
-load_dotenv()
 
+client = genai.Client(api_key="AIzaSyBT8Ax34W7c5-JiPoC7ZPQa_V7T3l9BQ9w")
 
-llm = ChatOpenAI(
-    model="nxchat-vision", 
-    api_key=os.getenv("api_key"),
-    base_url=os.getenv("base_url"),
-    temperature=1
-)
+def chat_with_gemini(prompt):
+    try:
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview", 
+            contents=prompt
+        )
+        
+        return response.text
+    
+    except Exception as e:
+        return f"Đã xảy ra lỗi: {str(e)}"
 
-image = Image.open(r"C:\Users\ha.phan\Downloads\Screenshot 2026-01-07 144202.png")
-buffered = BytesIO()
-image.save(buffered, format="PNG")
-img_base64 = base64.b64encode(buffered.getvalue()).decode()
-message = HumanMessage(
-    content=[
-        {"type": "text", "text": PASS1_PROMPT},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_base64}"}}
-    ]
-)
-response = llm.invoke([message])
-print(response.content)
+# Chạy thử
+if __name__ == "__main__":
+    user_input = "Giải thích thuyết tương đối hẹp trong 2 câu."
+    print("Gemini đang trả lời...\n")
+    print(chat_with_gemini(user_input))
