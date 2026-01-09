@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -37,141 +38,354 @@ logger = logging.getLogger(__name__)
 
 
 def get_conversation_prompt() -> str:
-    """Generate prompt for creating multi-turn Q&A conversations about document images."""
-    prompt = """You are an expert in analyzing Vietnamese business documents and creating natural, realistic conversations about their content.
+    """Generate diverse format conversations for VLM training."""
+    prompt = """You are an expert in analyzing Vietnamese business documents and creating natural, realistic conversations with DIVERSE OUTPUT FORMATS.
 
 TASK:
-Analyze the provided document image and generate a realistic multi-turn conversation (3-6 turns) between a user asking questions and an AI assistant answering based on the document's content.
+Analyze the provided document image and generate a realistic multi-turn conversation (4-8 turns) between a user asking questions and an AI assistant answering in VARIOUS FORMATS.
 
 CORE PRINCIPLES:
 
-1. **Naturalness & Diversity**
-   - Questions should sound like real users asking about real documents
-   - Vary question complexity, structure, and focus areas
-   - Avoid repetitive patterns or formulaic phrasing
-   - Mix formal and casual Vietnamese styles naturally
-
-2. **Question Type Variety** (distribute across conversations, mix 2-3 types per conversation):
+1. **Format Diversity** (CRITICAL for VLM training):
    
-   **Basic Information Retrieval** (30-40% of questions):
-   - Direct lookups: dates, codes, names, addresses, phone numbers
-   - Field extraction: "Tên người mua hàng là gì?", "Địa chỉ giao hàng ở đâu?"
+   Mix these formats naturally across conversations:
    
-   **Advanced Question Types** (60-70% of questions):
+   a) **Natural Text Response** (25-30%):
+      - User: "Tổng số lượng là bao nhiêu?"
+      - Assistant: "Tổng cộng có 11.100 sản phẩm trong phiếu này."
    
-   a) **Simple Arithmetic & Counting**:
-      - Count items: "Có bao nhiêu mặt hàng trong đơn?"
-      - Calculate totals: "Tổng số lượng là bao nhiêu?"
-      - Compare values: "Mặt hàng nào có số lượng nhiều nhất?"
-      - Verify sums: "Tổng tiền có đúng không?"
+   b) **JSON Format** (20-25%):
+      - User: "Lấy thông tin nhà cung cấp dưới dạng JSON nhé"
+      - Assistant: {"ten": "KOIKEYA", "sdt": "+84251368", "email": null}
+      - MUST be raw JSON, no markdown code blocks
    
-   b) **Negative Q/A (Câu hỏi phủ định)**:
-      - Ask about information NOT present in document (use in ~20% of conversations)
-      - Examples:
-        * "Có ghi chú về phí vận chuyển không?" (when not mentioned)
-        * "Có thông tin người nhận là công ty ABC không?" (wrong name)
-        * "Hóa đơn này có chiết khấu không?" (when no discount)
-      - Assistant should clearly state: "Không có thông tin về...", "Tài liệu không đề cập..."
+   c) **Markdown Tables** (15-20%):
+      - User: "Liệt kê sản phẩm dưới dạng bảng"
+      - Assistant:
+        | STT | Tên sản phẩm | Số lượng |
+        |-----|-------------|----------|
+        | 1   | Snack A     | 100      |
    
-   c) **Simple Relational Questions**:
-      - Connect 2 pieces of info: "Hàng giao đến địa chỉ nào và cho ai?"
-      - Check consistency: "Mã sản phẩm và tên sản phẩm có khớp nhau không?"
-      - Identify patterns: "Các mặt hàng này thuộc loại gì?"
+   d) **Structured Key-Value Pairs** (10-15%):
+      - User: "Cho tôi thông tin tóm tắt về phiếu"
+      - Assistant:
+        Số phiếu: PXB25110053
+        Ngày: 03/11/2025
+        Nhà cung cấp: KOIKEYA VIETNAM
+        Tổng số lượng: 11,100 pcs
    
-   d) **Field Existence & Cross-reference**:
-      - Check if fields are present: "Có mã số thuế trong tài liệu không?"
-      - Verify data consistency: "Tên công ty ở header và ở chân trang có giống nhau không?"
-      - Match related fields: "Số điện thoại và địa chỉ liên hệ có cùng thuộc về người nhận không?"
+   e) **Summary + Detail Format** (8-12%):
+      - User: "Tóm tắt phiếu này"
+      - Assistant:
+        **Tóm tắt:** Phiếu giao hàng có 8 loại snack, tổng 11,100 sản phẩm.
+        
+        Chi tiết:
+        - Snack Bắp (4 loại): 6,000 pcs
+          • Karamucho vị cay: 2,400 pcs (cao nhất)
+          • Karamucho phô mai: 600 pcs
+        - Snack Khoai tây (4 loại): 5,100 pcs
+   
+   f) **Comparison / Side-by-side** (5-10%):
+      - User: "So sánh số lượng 3 sản phẩm đầu"
+      - Assistant:
+        Snack Bắp (500VS29):    2,400 pcs
+        Snack Bắp (517VS29):      600 pcs  
+        Snack Bắp (519VS29):      600 pcs
+        
+        → Sản phẩm 500VS29 có số lượng cao nhất (gấp 4 lần)
+   
+   g) **Markdown Lists** (5-8%):
+      - User: "Các mặt hàng có những gì?"
+      - Assistant:
+        1. Snack Bắp Karamucho - vị cay (2,400 pcs)
+        2. Snack Bắp Karamucho - vị phô mai (600 pcs)
+        3. Snack khoai tây - vị cay (1,500 pcs)
+   
+   h) **Hierarchical Nested Text** (3-5%):
+      - User: "Tổng quan cấu trúc phiếu"
+      - Assistant:
+        📋 PHIẾU GIAO HÀNG PXB25110053
+        ├─ Thông tin chung
+        │  ├─ Ngày: 03/11/2025
+        │  └─ Nhà cung cấp: KOIKEYA
+        │
+        ├─ Sản phẩm (8 loại)
+        │  ├─ Snack Bắp: 6,000 pcs
+        │  └─ Snack Khoai tây: 5,100 pcs
+        │
+        └─ Tổng cộng: 11,100 pcs
+   
+   i) **CSV Format** (2-5%):
+      - User: "Export danh sách CSV"
+      - Assistant:
+        STT,Mã số,Tên hàng hóa,Số lượng
+        1,500VS29,"Snack Bắp Karamucho",2400
+        2,517VS29,"Snack Bắp phô mai",600
+   
+   j) **Q&A / FAQ Style** (2-5%):
+      - User: "Cho tôi biết: số phiếu? ngày? email? tổng?"
+      - Assistant:
+        Q: Số phiếu là gì?
+        A: PXB25110053
+        
+        Q: Ngày giao hàng?
+        A: 03/11/2025
+        
+        Q: Có email không?
+        A: Không có thông tin email
+        
+        Q: Tổng số lượng?
+        A: 11,100 pcs
 
-3. **Conversation Flow**
-   - Start with 1-2 basic questions (lookups or counting)
-   - Include 1-2 questions that require light reasoning
-   - Optionally add 1 negative question to test model
-   - Questions can build on each other naturally
-   - Keep it realistic - people often mix simple and analytical questions
+2. **Format Mixing Strategies**:
+   
+   Each conversation should use 2-4 different formats naturally:
+   
+   **Strategy A: Progressive Enhancement** (30%):
+```
+   Turn 1: Text answer
+   Turn 2: "Làm thành bảng markdown" → table
+   Turn 3: "Chuyển sang JSON" → JSON
+   Turn 4: "So sánh top 3" → comparison
+```
+   
+   **Strategy B: Format-First** (25%):
+```
+   Turn 1: "Lấy tất cả thông tin JSON" → full JSON
+   Turn 2: "Có email không?" → null handling
+   Turn 3: "Liệt kê sản phẩm dạng bảng" → markdown table
+   Turn 4: "Tóm tắt lại" → summary+detail
+```
+   
+   **Strategy C: Mixed Query** (25%):
+```
+   Turn 1: "Tổng số lượng?" → text
+   Turn 2: "Liệt kê sản phẩm" → list
+   Turn 3: "So sánh top 3" → comparison
+   Turn 4: "Export CSV" → CSV
+```
+   
+   **Strategy D: Deep Dive** (20%):
+```
+   Turn 1: "Tóm tắt phiếu" → summary
+   Turn 2: "Chi tiết sản phẩm dạng bảng" → table
+   Turn 3: "Thông tin nhà cung cấp key-value" → structured
+   Turn 4: "Có những trường nào null?" → null checking
+   Turn 5: "Chuyển sang JSON hoàn chỉnh" → JSON
+```
 
-4. **Answer Quality**
-   - Base all answers STRICTLY on visible document information
-   - For negative questions: "Không thấy thông tin về...", "Tài liệu không có..."
-   - For calculations: give direct answer, optionally add brief explanation
-   - Be precise with numbers, codes, and names
-   - Use conversational Vietnamese
-   - Keep answers concise and clear
+3. **Negative Questions & Null Handling** (20-30% of conversations):
+   
+   Include questions about NON-EXISTENT fields in various formats:
+   
+   Text format:
+   - "Email của nhà cung cấp là gì?" → "Không có thông tin email trong phiếu"
+   - "Có ghi chú về phí vận chuyển không?" → "Tài liệu không đề cập"
+   
+   JSON format:
+   - "Lấy email và fax JSON" → {"email": null, "fax": "+84251368"}
+   
+   Key-value format:
+   - Email: Không có
+   - Fax: +84(0)251 368 1369
+   
+   In tables:
+   - | Field | Value |
+     | Email | Không có |
 
-IMPORTANT GUIDELINES:
+4. **Question Type Variety**:
+   
+   **Basic Extraction** (25-30%):
+   - "Số phiếu là gì?"
+   - "Lấy thông tin nhà cung cấp"
+   
+   **Format-specific requests** (25-30%):
+   - "Cho tôi dưới dạng JSON"
+   - "Làm bảng markdown"
+   - "Export CSV"
+   - "Tóm tắt có cấu trúc"
+   
+   **Arithmetic & Comparison** (15-20%):
+   - "Tổng số lượng?"
+   - "So sánh 3 sản phẩm"
+   - "Sản phẩm nào nhiều nhất?"
+   
+   **Transformation** (10-15%):
+   - "Đổi sang format khác"
+   - "Chuyển sang bảng"
+   - "Format lại dạng key-value"
+   
+   **Verification & Negative** (10-15%):
+   - "Có email không?"
+   - "Những trường nào bị thiếu?"
 
-✓ DO:
-- Create realistic questions someone would actually ask
-- Mix basic lookups with light analytical questions
-- Include negative questions occasionally (20-30% of conversations)
-- Use natural Vietnamese with proper diacritics
-- Make questions specific to the document type
-- Vary difficulty within 3-6 turns
+5. **Answer Quality by Format**:
+   
+   **Text responses:**
+   - Natural Vietnamese, concise
+   - "Tổng cộng có 11,100 sản phẩm"
+   
+   **JSON responses:**
+   - Raw JSON, no code blocks
+   - Explicit null for missing
+   - Consistent naming
+   
+   **Markdown tables:**
+   - Proper alignment
+   - Vietnamese headers
+   - Include units
+   
+   **Key-Value:**
+   - Clear labels
+   - Aligned colons
+   - One entry per line
+   
+   **Summary+Detail:**
+   - Bold summary
+   - Indented details
+   - Bullet points for sub-items
+   
+   **Comparison:**
+   - Right-aligned numbers
+   - Clear spacing
+   - Include conclusion
+   
+   **CSV:**
+   - Proper escaping
+   - Quoted strings with commas
+   - Consistent delimiters
+   
+   **Hierarchical:**
+   - Tree structure symbols
+   - Clear indentation
+   - Emoji/icons optional
+   
+   **Q&A:**
+   - Clear Q: and A: labels
+   - One line break between pairs
+   - Concise answers
 
-✗ DON'T:
-- Use overly complex multi-hop reasoning
-- Ask too many calculation questions in one conversation
-- Use robotic or template-like language
-- Hallucinate information not in document
-- Make every question a simple "X là gì?"
-- Over-explain answers
+CRITICAL RULES:
 
-DIFFICULTY DISTRIBUTION (aim for this balance):
-- 30-40%: Basic information retrieval (dates, names, codes)
-- 30-40%: Simple arithmetic or counting (totals, comparisons)
-- 20-30%: Negative Q/A or light verification
+**JSON Format:**
+- Return RAW JSON without ```json ... ``` blocks
+- Use null for missing fields, not "null" string
+- Properly escape if nested in outer JSON
+- Keep numbers as numbers
+
+**Markdown:**
+- Tables must have proper | alignment
+- Lists use proper numbering or bullets
+- No mixing tabs and spaces
+
+**CSV:**
+- Escape commas in values with quotes
+- Consistent encoding (UTF-8)
+- Header row when appropriate
+
+**Null Handling:**
+- Be explicit: "Không có", null, "N/A"
+- Consistent across formats
+- Don't make up data
+
+FORMAT DISTRIBUTION (target across dataset):
+- Natural text:        25-30%
+- JSON:                20-25%
+- Markdown tables:     15-20%
+- Key-Value pairs:     10-15%
+- Summary+Detail:       8-12%
+- Comparison:           5-10%
+- Markdown lists:       5-8%
+- Hierarchical:         3-5%
+- CSV:                  2-5%
+- Q&A style:            2-5%
+
+CONVERSATION LENGTH:
+- 4-5 turns: Simple documents, 2-3 formats
+- 6-7 turns: Medium complexity, 3-4 formats
+- 8 turns: Complex documents, 4-5 formats
+
+Each conversation should feel natural - don't force all formats into one conversation.
 
 OUTPUT FORMAT:
-Return a JSON object with this structure:
-
 {
   "conversation": [
     {
-      "turn": 1,
-      "user": "<Natural Vietnamese question>",
-      "assistant": "<Accurate answer from document>"
-    },
-    {
-      "turn": 2,
-      "user": "<Follow-up or new question>",
-      "assistant": "<Answer>"
+      "user": "<Natural question with/without format request>",
+      "assistant": "<Answer in appropriate format>"
     }
-    // 3-6 turns total
+    // 4-8 turns
   ]
 }
 
 QUALITY CHECKLIST:
-- [ ] 3-6 conversation turns
-- [ ] Mix of basic lookups and light analytical questions
-- [ ] Questions feel natural and conversational
-- [ ] All answers accurate and document-based
-- [ ] Proper Vietnamese language throughout
-- [ ] At least 1 question beyond simple lookup
-- [ ] No hallucinated information
-- [ ] Valid JSON format
+- [ ] 4-8 conversation turns (adjust based on document complexity)
+- [ ] 2-4 different formats used naturally
+- [ ] 20-30% chance: includes null/negative questions
+- [ ] All formats properly structured
+- [ ] JSON is raw (no code blocks)
+- [ ] Natural format transitions
+- [ ] All answers accurate
+- [ ] Proper Vietnamese
+- [ ] Valid outer JSON
+
+EXAMPLES:
+
+Example 1 - Progressive (6 turns):
+{
+  "conversation": [
+    {"user": "Số phiếu và ngày?", 
+    "assistant": "Số phiếu: PXB25110053, Ngày: 03/11/2025"},
+    {"user": "Chuyển sang JSON nhé",
+    "assistant": "{\"so_phieu\": \"PXB25110053\", \"ngay\": \"03/11/2025\"}"},
+    {"user": "Thêm email nhà cung cấp",
+     "assistant": "{\"so_phieu\": \"PXB25110053\", \"ngay\": \"03/11/2025\", \"email\": null}"},
+    {"user": "Liệt kê 3 sản phẩm đầu dạng bảng",
+     "assistant": "| STT | Tên | Số lượng |\n|-----|-----|----------|\n| 1 | Snack A | 2400 |"},
+    {"user": "So sánh số lượng của chúng",
+     "assistant": "Snack A: 2,400 pcs\nSnack B:   600 pcs\nSnack C:   600 pcs\n\n→ Snack A cao nhất (gấp 4 lần)"},
+    {"user": "Export CSV tất cả sản phẩm",
+     "assistant": "STT,Mã,Tên,Số lượng\n1,500VS29,\"Snack A\",2400\n2,517VS29,\"Snack B\",600"}
+  ]
+}
+
+Example 2 - Mixed (5 turns):
+{
+  "conversation": [
+    {"user": "Tóm tắt phiếu này",
+     "assistant": "**Tóm tắt:** Phiếu PXB25110053 ngày 03/11/2025, có 8 loại snack.\n\nChi tiết:\n- Snack Bắp: 6,000 pcs\n- Snack Khoai tây: 5,100 pcs"},
+    {"user": "Thông tin nhà cung cấp dạng key-value",
+     "assistant": "Tên: KOIKEYA VIETNAM\nĐịa chỉ: N3-2 St., Long Duc IP\nĐiện thoại: +84(0)251 368 1368\nEmail: Không có"},
+    {"user": "Cấu trúc tổng quan",
+     "assistant": "📋 PHIẾU PXB25110053\n├─ Ngày: 03/11/2025\n├─ NCC: KOIKEYA\n├─ Sản phẩm: 8 loại\n└─ Tổng: 11,100 pcs"},
+    {"user": "Chi tiết sản phẩm JSON",
+     "assistant": "{\"products\": [{\"ma\": \"500VS29\", \"qty\": 2400}, {\"ma\": \"517VS29\", \"qty\": 600}]}"},
+    {"user": "Có những field nào thiếu?",
+     "assistant": "Q: Email nhà cung cấp?\nA: Không có\n\nQ: Ngày sản xuất?\nA: Không ghi\n\nQ: Ghi chú?\nA: Để trống"}
+  ]
+}
 """
-
     return prompt
-
 
 def validate_conversation_result(result: dict) -> dict:
     """Validate and normalize conversation generation result."""
-    normalized = {
-        "document_summary": result.get("document_summary", ""),
-        "conversation": [],
-        "key_information_covered": result.get("key_information_covered", []),
-    }
+    conversation = []
+    if "conversation" in result:
+        for turn in result["conversation"]:
+            assistant_content = turn.get("assistant", "")
+            
+            if isinstance(assistant_content, (dict, list)):
+                assistant_content = json.dumps(assistant_content, ensure_ascii=False)
+            elif not isinstance(assistant_content, str):
+                assistant_content = str(assistant_content)
 
-    if "conversation" in result and isinstance(result["conversation"], list):
-        for idx, turn in enumerate(result["conversation"], start=1):
             normalized_turn = {
-                "turn": turn.get("turn", idx),
                 "user": turn.get("user", ""),
-                "assistant": turn.get("assistant", ""),
+                "assistant": assistant_content,
             }
-            normalized["conversation"].append(normalized_turn)
+            conversation.append(normalized_turn)
 
-    return normalized
+    return conversation
 
 
 def generate_conversation_from_image(
@@ -274,10 +488,10 @@ def process_file(
                     "page_number": page_num,
                     "total_pages": len(images),
                     "generated_at": datetime.now().isoformat(),
-                    "conversation": result.get("conversation", []),
+                    "conversation": result,
                 }
                 append_result(output_entry, output_path)
-                logger.info(f"  ✓ Generated conversation for page {page_num} ({len(result.get('conversation', []))} turns)")
+                logger.info(f"  ✓ Generated conversation for page {page_num} ({len(result)} turns)")
             else:
                 output_entry = {
                     "source_file": file_path,
@@ -311,10 +525,10 @@ def process_file(
                     "page_number": 1,
                     "total_pages": 1,
                     "generated_at": datetime.now().isoformat(),
-                    "conversation": result.get("conversation", []),
+                    "conversation": result,
                 }
                 append_result(output_entry, output_path)
-                logger.info(f"  ✓ Generated conversation ({len(result.get('conversation', []))} turns)")
+                logger.info(f"  ✓ Generated conversation ({len(result)} turns)")
             else:
                 output_entry = {
                     "source_file": file_path,

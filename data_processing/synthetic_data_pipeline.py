@@ -52,89 +52,140 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 
+PASS1_PROMPT = """You are a real user chatting with an AI to extract information from a document.
 
-PASS1_PROMPT = """Bạn là một người dùng thực tế đang chat với AI để trích xuất dữ liệu từ tài liệu.
+TASK: Generate 2-3 natural chat questions (ONLY user questions, NO AI responses)
 
-BƯỚC 1: QUAN SÁT TÀI LIỆU
-Xem kỹ tài liệu và xác định:
-- Các trường thông tin CÓ SẴN trong tài liệu (số phiếu, ngày, tên kho, sản phẩm, số lượng...)
-- Các trường PHÙ HỢP với loại tài liệu này nhưng KHÔNG CÓ (email, phone, địa chỉ, fax...)
+STEP 1 - ANALYZE THE DOCUMENT:
+- Identify document type (delivery note, invoice, receipt, purchase order...)
+- List all AVAILABLE fields/information
+- Think of reasonable fields for this document type that are NOT present in the image
 
-BƯỚC 2: TẠO HỘI THOẠI
-Tạo 2-3 câu hỏi liên tiếp như đang chat (chỉ có câu hỏi của user, không có AI response):
+STEP 2 - CREATE DIVERSE CONVERSATIONS:
 
-**Câu 1** - Hỏi ban đầu:
-- Chọn 2-3 trường CÓ SẴN trong tài liệu
-- Thêm 1 trường KHÔNG CÓ nhưng hỏi tự nhiên (đừng nói "nếu có", "dù không có")
-- Yêu cầu JSON format
+**GOLDEN RULES:**
+1. **DIVERSE STYLES** - Each conversation should be different:
+   - Formal/casual/mixed style
+   - Pure Vietnamese, pure English, or Vietnamese-English mix
+   - Sometimes request JSON, sometimes plain text, sometimes tables, sometimes bullet points
+   
+2. **DIVERSE QUESTION STRUCTURES**:
+   - Direct question: "What's the invoice number?"
+   - List request: "Show me customer information"
+   - Summary request: "What's the total quantity and value?"
+   - Conditional: "Which products have quantity > 100?"
+   - Comparison: "Which product is most expensive?"
+   - Format request: "List as table/list/JSON/whatever"
 
-**Câu 2** - Hỏi tiếp:
-- Chọn các trường khác từ tài liệu (chi tiết sản phẩm, bảng số liệu...)
-- Hoặc yêu cầu sửa/bổ sung
-- Nói tự nhiên: "à thêm...", "cho thêm...", "còn..."
+3. **DIVERSE CONTENT**:
+   - Turn 1: Can ask for overview OR details OR single field
+   - Turn 2: Can ask for more OR modify OR clarify OR different format
+   - Turn 3 (50% chance): Can summarize OR extract differently OR verify
 
-**Câu 3** - Tùy chọn (50% có):
-- Hỏi thêm hoặc điều chỉnh format
-- Hoặc tổng hợp
+**DIVERSITY EXAMPLES (DON'T copy, just reference ideas):**
 
-PHONG CÁCH:
-✅ Chat tự nhiên: "cho mình...", "lấy...", "à còn..."
-✅ Ngắn gọn, đời thường
-✅ Việt/Anh/mix thoải mái
-✅ Tên trường tùy ý dựa trên nội dung thực tế
-✅ Hỏi field không có như field bình thường
+*Style 1 - Casual Vietnamese + JSON:*
+"Lấy số phiếu và ngày cho mình. JSON nhé"
+"À còn list sản phẩm nữa"
 
-❌ TRÁNH: "vui lòng", "thực hiện", "xin hãy"
-❌ TRÁNH: Từ lạ, typo
-❌ TRÁNH: Dùng các trường KHÔNG liên quan đến loại tài liệu này
+*Style 2 - Formal Vietnamese + Text:*
+"Cho tôi biết thông tin người gửi và người nhận"
+"Số lượng và đơn giá của từng sản phẩm là bao nhiêu?"
 
-VÍ DỤ FLOW (KHÔNG copy y nguyên):
+*Style 3 - English + Table:*
+"Get the order number and date"
+"List all items in a table format"
+"What's the total amount?"
 
-*Nếu là phiếu xuất kho:*
-- Có thể hỏi: số phiếu, ngày, kho, sản phẩm, số lượng, đơn vị...
-- Không có nhưng hợp lý: email kho, phone, địa chỉ giao hàng...
+*Style 4 - Detailed questions:*
+"How many product types are in this document?"
+"Which product has the highest quantity?"
 
-*Nếu là hóa đơn:*
-- Có thể hỏi: số HĐ, ngày, khách hàng, tổng tiền, thuế...
-- Không có nhưng hợp lý: email KH, fax, website...
+*Style 5 - General overview:*
+"Show me all information from this form"
+"Reformat it as a markdown table"
 
-*Nếu là biên lai:*
-- Có thể hỏi: số biên lai, người nộp, số tiền, nội dung...
-- Không có nhưng hợp lý: CMND, địa chỉ, phone...
+*Style 6 - Conditional queries:*
+"List products with unit price above 100k"
+"Are there any expired products?"
 
-PHONG CÁCH NÓI VÀ TÊN TRƯỜNG:
+*Style 7 - Vietnamese-English mix:*
+"Get order number, date và customer info"
+"List all items dạng bảng"
+"Tổng tiền bao nhiêu?"
 
-**Ví dụ casual:**
-"Lấy [tên trường từ doc] và [tên trường không có] cho mình. JSON nhé"
-"À cho thêm [chi tiết từ bảng]"
+*Style 8 - Casual English:*
+"grab the invoice details for me"
+"also need the product breakdown"
 
-**Ví dụ mix:**
-"Get [field 1], [field 2] and [field không có]. JSON format"
-"Thêm [data từ bảng] vào"
+*Style 9 - Simple plain text request:*
+"What's the delivery date and total weight?"
+"List the products with their quantities"
 
-**Ví dụ 3 turns:**
-"Cho mình [field 1], [field 2] và [field không có] dạng JSON"
-"Thêm [chi tiết] vào"
-"Đổi format [field] sang [format khác]"
+*Style 10 - Direct Vietnamese:*
+"Ngày giao hàng và tổng khối lượng là bao nhiêu?"
+"Có mấy loại sản phẩm trong phiếu này?"
+
+**SPEAKING STYLE:**
+✅ Natural: "cho mình", "lấy giúp", "show me", "can you", "được không"
+✅ Short or long depending on mood
+✅ Sometimes polite, sometimes casual
+✅ Sometimes ask 1 field, sometimes ask many
+✅ Field names based on actual document content (don't use generic names)
+✅ Keep questions SIMPLE and DIRECT - don't add unnecessary context
+
+❌ AVOID:
+- Always asking for JSON
+- Always being too formal with "vui lòng", "xin hãy", "please kindly"
+- Asking the same pattern repeatedly
+- Asking for fields irrelevant to document type
+- Typos or spelling errors
+- Adding weird justifications like "cần để vào slide", "for presentation", "để báo cáo"
+- Over-explaining why you need the information
+
+**NULL FIELD INJECTION TECHNIQUE:**
+- 30-40% of conversations should include 1 non-existent field
+- Ask NATURALLY as if the field exists (don't say "if available", "though not present")
+- Reasonable examples:
+  + Delivery note → ask for email, phone of recipient (often not present)
+  + Invoice → ask for company website, fax (often not present)
+  + Purchase order → ask for specific delivery address (may not be present)
+
+**ENSURE DIVERSITY:**
+Output format distribution:
+- JSON format: ~40% conversations
+- Plain text: ~30% conversations  
+- Table/List format: ~20% conversations
+- Mixed format: ~10% conversations
+
+Language distribution:
+- Pure Vietnamese: ~50%
+- Vietnamese-English mix: ~30%
+- Pure English: ~20%
+
+Question scope:
+- Ask 1-2 fields: ~40%
+- Ask many fields: ~40%
+- Ask summary/conditional: ~20%
 
 OUTPUT:
 ```json
 {
   "turns": [
-    "câu hỏi 1 - dựa trên nội dung thực tế",
-    "câu hỏi 2 - dựa trên nội dung thực tế",
-    "câu hỏi 3 (có thể bỏ)"
+    "question 1 - based on actual content, diverse style",
+    "question 2 - natural follow-up, can change format",
+    "question 3 (optional) - if needed for addition or adjustment"
   ]
 }
 ```
 
-CHÚ Ý:
-- QUAN SÁT tài liệu trước khi tạo câu hỏi
-- Chọn tên trường DỰA TRÊN nội dung thực tế trong ảnh
-- Đừng dùng tên trường generic nếu doc có tên cụ thể
-- Mỗi câu là lượt chat của USER, không có AI response
+IMPORTANT NOTES:
+- OBSERVE the document carefully first
+- Each conversation must be DIFFERENT in style, format, tone
+- Don't repeat the same patterns
+- Field names must be based on ACTUAL content
+- The more NATURAL and DIVERSE, the better
 """
-
 
 def parse_local_model_response(response_text: str) -> Optional[List[str]]:
     """Parse response from local model to extract the list of turn prompts."""
@@ -249,7 +300,6 @@ def generate_multiturn_prompts_with_local_model(
     
     return None
 
-
 def extract_with_gemini_multiturn(
     image: Image.Image,
     turns: List[str],
@@ -263,20 +313,32 @@ def extract_with_gemini_multiturn(
     assistant_responses = []
     
     # Lịch sử chat thủ công
-    # Cấu trúc: [User(Image, Text), Model(Text), User(Text), Model(Text)...]
     history_contents = [] 
     
-    system_instruction = """IMPORTANT:
-- Return ONLY valid JSON format
-- For fields that exist in the document: extract actual value
-- For fields that DON'T exist in the document: set to null
-- Do NOT hallucinate or make up missing data
-- Consider context from previous turns in this conversation
-- If asked to modify/reformat previous data, do so accordingly"""
+    system_instruction = """You are a helpful document extraction assistant. Follow these rules STRICTLY:
+1. **FORMAT ADHERENCE**: 
+   - If user asks for JSON → return ONLY valid JSON
+   - If user asks for plain text/văn bản → return natural language text (NO JSON)
+   - If user asks for table/bảng → return markdown table format
+   - If user asks for list/bullet points → return list format
+   - If user doesn't specify format → choose the most natural format (prefer JSON for structured data)
+2. **DATA EXTRACTION**:
+   - For fields that exist in the document: extract the actual value
+   - For fields that DON'T exist: set to null (in JSON) or state "không có" / "not available" (in text)
+   - NEVER hallucinate or make up missing data
+3. **CONVERSATION CONTEXT**:
+   - Remember previous turns in this conversation
+   - If asked to modify/reformat previous data, do so accordingly
+   - If asked to add more fields, include previous data + new data
+4. **OUTPUT QUALITY**:
+   - Be concise and accurate
+   - Use the same language as the user's question
+   - Maintain consistency across turns"""
 
     for turn_idx, user_prompt in enumerate(turns, 1):
         logger.info(f"    Turn {turn_idx}/{len(turns)}: Getting response...")
         
+        # Combine user prompt with system instruction
         current_prompt = f"{user_prompt}\n\n{system_instruction}"
         
         if turn_idx == 1:
@@ -295,20 +357,41 @@ def extract_with_gemini_multiturn(
         response_text = None
         for attempt in range(max_retries):
             try:
+                # Rate limit (RPM) check logic within KeyManager
                 key_manager.wait_for_rate_limit()
                 
                 response = model.generate_content(history_contents)
                 
+                # Record successful usage
                 if key_manager.record_request():
                     pass
                 
                 if response.text:
-                    response_text = parse_gemini_response(response.text)
-                    if response_text:
+                    # For JSON responses, validate and clean
+                    if any(keyword in user_prompt.lower() for keyword in ['json', 'JSON']):
+                        response_text = parse_gemini_response(response.text)
+                        if response_text:
+                            break
+                    else:
+                        # For non-JSON responses, just clean markdown fences if any
+                        response_text = response.text.strip()
+                        if "```" in response_text:
+                            response_text = response_text.replace("```json", "").replace("```", "").strip()
                         break
+                        
             except Exception as e:
+                error_str = str(e).lower()
+                
+                # --- PHẦN SỬA ĐỔI QUAN TRỌNG TẠI ĐÂY ---
+                # Nếu gặp lỗi Quota/Limit (429), KHÔNG ĐƯỢC RETRY, phải RAISE ngay lập tức
+                # để hàm main bắt được và đổi key.
+                if "quota" in error_str or "429" in error_str or "limit" in error_str:
+                    logger.warning(f"Turn {turn_idx} hit HARD LIMIT (Quota): {e}")
+                    raise e  # Ném lỗi ra ngoài để hàm run_synthetic_pipeline bắt và đổi key
+                
+                # Các lỗi khác (network, server error 500...) thì mới retry
                 logger.warning(f"Turn {turn_idx} failed attempt {attempt}: {e}")
-                time.sleep(5 * (attempt + 1))
+                time.sleep(2 ** attempt) # Backoff exponential
 
         if not response_text:
             return None

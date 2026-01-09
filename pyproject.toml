@@ -19,4 +19,5 @@ dependencies = [
     "albumentations>=2.0.8",
     "langchain-openai>=1.1.6",
     "google-genai>=1.57.0",
+    "zai-sdk>=0.2.0",
 ]

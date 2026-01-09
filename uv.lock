@@ -2549,6 +2549,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pyjwt"
+version = "2.10.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/46/bd74733ff231675599650d3e47f361794b22ef3e3770998dda30d3b63726/pyjwt-2.10.1.tar.gz", hash = "sha256:3cc5772eb20009233caf06e9d8a0577824723b44e6648ee0a2aedb6cf9381953", size = 87785, upload-time = "2024-11-28T03:43:29.933Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/ad/689f02752eeec26aed679477e80e632ef1b682313be70793d798c1d5fc8f/PyJWT-2.10.1-py3-none-any.whl", hash = "sha256:dcdd193e30abefd5debf142f9adfcdd2b58004e644f25406ffaebd50bd98dacb", size = 22997, upload-time = "2024-11-28T03:43:27.893Z" },
+]
+
+[[package]]
 name = "pyparsing"
 version = "3.2.5"
 source = { registry = "https://pypi.org/simple" }
@@ -2869,6 +2878,7 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
     { name = "unsloth" },
+    { name = "zai-sdk" },
 ]
 
 [package.metadata]
@@ -2887,6 +2897,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "transformers", specifier = ">=4.57.3" },
     { name = "unsloth", specifier = ">=2025.12.9" },
+    { name = "zai-sdk", specifier = ">=0.2.0" },
 ]
 
 [[package]]
@@ -3741,6 +3752,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f9/86/0f0dccb6e59a9e7f122c5afd43568b1d31b8ab7dda5f1b01fb5c7025c9a9/yarl-1.22.0-cp314-cp314t-win_amd64.whl", hash = "sha256:9fb17ea16e972c63d25d4a97f016d235c78dd2344820eb35bc034bc32012ee27", size = 96292, upload-time = "2025-10-06T14:12:15.398Z" },
     { url = "https://files.pythonhosted.org/packages/48/b7/503c98092fb3b344a179579f55814b613c1fbb1c23b3ec14a7b008a66a6e/yarl-1.22.0-cp314-cp314t-win_arm64.whl", hash = "sha256:9f6d73c1436b934e3f01df1e1b21ff765cd1d28c77dfb9ace207f746d4610ee1", size = 85171, upload-time = "2025-10-06T14:12:16.935Z" },
     { url = "https://files.pythonhosted.org/packages/73/ae/b48f95715333080afb75a4504487cbe142cae1268afc482d06692d605ae6/yarl-1.22.0-py3-none-any.whl", hash = "sha256:1380560bdba02b6b6c90de54133c81c9f2a453dee9912fe58c1dcced1edb7cff", size = 46814, upload-time = "2025-10-06T14:12:53.872Z" },
+]
+
+[[package]]
+name = "zai-sdk"
+version = "0.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cachetools" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-core" },
+    { name = "pyjwt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1c/7a/14ad9c91f644f2dc7435c4d6c1b6ef2c5a56c62bbaec453cf319bfd82370/zai_sdk-0.2.0.tar.gz", hash = "sha256:a7a4dbf387cd8facf158d775429ff00738f08ba9ea91b4ae5f7553c4c099d74d", size = 74403, upload-time = "2025-12-22T14:08:03.987Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/84/cd/f102f02b36fd6e7f5abbdda47e215b182b11e48c365440c3af0b957401fd/zai_sdk-0.2.0-py3-none-any.whl", hash = "sha256:808e31f184f1ab2f58dae5cb3f45f3bad95960ac44f21963c648bac8fa11d4fd", size = 122214, upload-time = "2025-12-22T14:08:02.934Z" },
 ]
 
 [[package]]
