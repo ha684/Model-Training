@@ -150,27 +150,3 @@ VALIDATION CHECKLIST:
 Analyze and extract data from this document:"""
 
     return prompt
-
-
-def get_fields_schema() -> dict:
-    """
-    Returns the schema definition for extracted data.
-    Useful for validation and documentation.
-    """
-    return {
-        "metadata_fields": METADATA_FIELDS,
-        "table_row_fields": TABLE_ROW_FIELDS,
-        "all_fields": DEFAULT_FIELDS,
-        "field_descriptions": {
-            "Số phiếu": "PO/Document number (usually labeled Số PGC), NOT the number after Mã AR",
-            "Ngày chứng từ(mm/dd/yyyy)": "Document date in mm/dd/yyyy format",
-            "Ngày xuất(mm/dd/yyyy)": "Export/shipping date in mm/dd/yyyy format",
-            "Mã FG": "Finished goods product code (e.g., PG1490, FC9345)",
-            "Đvt": "Unit type (Hộp, Hũ, Gói, Chai, etc.)",
-            "Số lượng(Thùng)": "Quantity in cartons/containers (each contains multiple pcs)",
-            "Số lượng(Pcs)": "Quantity in individual pieces",
-            "Kho nhận": "Receiving warehouse or customer name",
-            "Địa chỉ": "Delivery address (may not exist in all documents)",
-            "Mã AR": "Customer/AR code with any suffixes (e.g., A68/750___141)",
-        }
-    }

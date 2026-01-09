@@ -1,45 +1,25 @@
 import json
-import os
 
-# Cấu hình đường dẫn file
-INPUT_FILE = './output/conversations.json'  # Đường dẫn file hiện tại của bạn
-OUTPUT_FILE = './output/conversations.json' # File mới đã sửa
+# Giả lập chuỗi JSON "xấu xí" bạn vừa nhận được
+messy_json_str = """
+{
+    "assistant": "{\\\"nha_cung_cap\\\": {\\\"ten_cong_ty\\\": \\\"KOIKEYA...\\\"}}"
+}
+"""
 
-def fix_dataset(input_path, output_path):
-    print(f"Đang đọc file: {input_path}...")
-    
-    try:
-        with open(input_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        print("Không tìm thấy file input!")
-        return
+# Bước 1: Load file tổng (Level 1)
+data = json.loads(messy_json_str)
+assistant_response = data["assistant"]
 
-    fixed_count = 0
-    
-    # Duyệt qua từng đoạn hội thoại
-    for entry in data:
-        if "conversation" in entry:
-            for turn in entry["conversation"]:
-                assistant_content = turn.get("assistant")
-                
-                # KIỂM TRA QUAN TRỌNG:
-                # Nếu nó là Dict hoặc List -> Chuyển thành String (Dump nó ra)
-                if isinstance(assistant_content, (dict, list)):
-                    turn["assistant"] = json.dumps(assistant_content, ensure_ascii=False)
-                    fixed_count += 1
-                # Nếu là None -> Chuyển thành chuỗi rỗng hoặc xử lý tùy ý
-                elif assistant_content is None:
-                    turn["assistant"] = ""
+print("--- Level 1: Lấy nội dung Assistant (Dạng chuỗi) ---")
+print(assistant_response) 
+# Kết quả vẫn sẽ có dấu \ nhưng bớt đi 1 lớp
 
-    print(f"Đã sửa {fixed_count} lượt hội thoại từ Object -> String.")
-
-    # Lưu file mới
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    
-    print(f"Đã lưu file sửa xong tại: {output_path}")
-    print("Bạn hãy kiểm tra file mới, phần assistant sẽ có nhiều dấu gạch chéo (\) là ĐÚNG.")
-
-if __name__ == "__main__":
-    fix_dataset(INPUT_FILE, OUTPUT_FILE)
+# Bước 2: Load nội dung Assistant (Level 2)
+# Đây là bước các ứng dụng sau này sẽ làm để lấy dữ liệu sạch
+try:
+    inner_data = json.loads(assistant_response)
+    print("\n--- Level 2: Dữ liệu sạch (Dạng Object) ---")
+    print(json.dumps(inner_data, indent=2, ensure_ascii=False))
+except:
+    print("Đây là text thường, không phải JSON")

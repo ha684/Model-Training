@@ -55,3 +55,5 @@ mlflow.db
 mlartifacts/
 merged_dataset/
 .env
+
+*.png
