@@ -6,8 +6,8 @@ Modify the fields lists below to add/remove fields as needed.
 
 DEFAULT_FIELDS = [
     "Số phiếu",
-    "Ngày chứng từ(mm/dd/yyyy)",
-    "Ngày xuất(mm/dd/yyyy)",
+    "Ngày chứng từ(dd/mm/yyyy)",
+    "Ngày xuất(dd/mm/yyyy)",
     "Mã FG",
     "Đvt",
     "Số lượng(Thùng)",
@@ -19,8 +19,8 @@ DEFAULT_FIELDS = [
 
 METADATA_FIELDS = [
     "Số phiếu",
-    "Ngày chứng từ(mm/dd/yyyy)",
-    "Ngày xuất(mm/dd/yyyy)",
+    "Ngày chứng từ(dd/mm/yyyy)",
+    "Ngày xuất(dd/mm/yyyy)",
     "Kho nhận",
     "Địa chỉ",
     "Mã AR",
@@ -129,7 +129,7 @@ CRITICAL EXTRACTION RULES:
 3. Each row in the product table should be a separate object in the "table_rows" array
 4. **DO NOT confuse numbers after "Mã AR" as "Số phiếu"** - these are suffixes of Mã AR
 5. If a field value cannot be found or does not exist, set it to null
-6. For date fields, convert to mm/dd/yyyy format. If unclear, set to null
+6. For date fields, convert to dd/mm/yyyy format. If unclear, set to null
 7. For numeric fields (quantities), extract only the number. If not found, set to null
 8. Preserve exact Vietnamese spelling and diacritics (ă, â, đ, ê, ô, ơ, ư, etc.)
 9. For code fields (Mã FG, Mã AR), extract the exact alphanumeric code as shown
@@ -141,7 +141,7 @@ VALIDATION CHECKLIST:
 - [ ] "Số phiếu" is from the document number field, NOT from after "Mã AR"
 - [ ] "Mã AR" includes complete code with any suffixes
 - [ ] All Vietnamese diacritics are preserved correctly
-- [ ] Dates are in mm/dd/yyyy format or null
+- [ ] Dates are in dd/mm/yyyy format or null
 - [ ] Each table row is a separate object in "table_rows"
 - [ ] "Địa chỉ" is null if not shown (don't guess)
 - [ ] Quantities are numbers only (no text)
