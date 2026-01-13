@@ -39,7 +39,7 @@ DATASET_SPLIT = "validation"
 
 # Concurrent settings - optimized for 2xT4 (15GB each)
 # With 2B model + TP2, you can handle ~8-12 concurrent requests
-MAX_CONCURRENT_REQUESTS = 10
+MAX_CONCURRENT_REQUESTS = 5
 TIMEOUT = 180  # seconds
 
 
