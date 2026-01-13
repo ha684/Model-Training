@@ -1,13 +1,13 @@
 # merge_and_push.py
 from unsloth import FastVisionModel
-
+import os
 # 1. Cấu hình
 LORA_MODEL_ID = (
     "ha684/qwen3-vl-2b-lora-finetuned"  # Tên repo LoRA bạn vừa push ở Phase 1
 )
 NEW_MODEL_ID = "ha684/qwen3-vl-2b-1.0"  # Tên repo mới cho bản Full
 HF_TOKEN = "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"  # Token của bạn (hoặc lấy từ os.environ)
-
+os.environ["HF_TOKEN"] = HF_TOKEN
 # 2. Load lại Model & Adapter
 # Lưu ý: Load ở chế độ 16bit (không phải 4bit) để merge chất lượng tốt nhất
 print("⏳ Loading LoRA and Base model...")
@@ -15,7 +15,7 @@ model, tokenizer = FastVisionModel.from_pretrained(
     model_name=LORA_MODEL_ID,
     load_in_4bit=False,  # QUAN TRỌNG: Để False để merge sạch
     load_in_16bit=True,
-)
+)   
 
 # 3. Merge & Push (Chọn 1 trong các cách dưới đây)
 
