@@ -6,14 +6,11 @@ from .fields_config import (
     METADATA_FIELDS,
     TABLE_ROW_FIELDS,
     get_extraction_prompt,
-    get_fields_schema,
 )
 
 __all__ = [
     "DEFAULT_FIELDS",
-    "METADATA_FIELDS", 
+    "METADATA_FIELDS",
     "TABLE_ROW_FIELDS",
     "get_extraction_prompt",
-    "get_fields_schema",
 ]
-
