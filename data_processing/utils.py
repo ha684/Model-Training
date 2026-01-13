@@ -608,25 +608,5 @@ Example 2 - With Arithmetic (5 turns):
      "assistant": "Không có thông tin mã số thuế trong phiếu xuất kho này."}
   ]
 }
-
-Example 3 - Mixed with Multiple Confusions (7 turns):
-{
-  "conversation": [
-    {"user": "Ngày trên phiếu là ngày 11 tháng 3 đúng không?",
-     "assistant": "Không chính xác. Định dạng ngày là DD/MM/YYYY.\nNgày trên phiếu là: 03/11/2025\nTức là ngày 03 tháng 11 năm 2025, không phải ngày 11 tháng 3."},
-    {"user": "Lấy số phiếu và mã khách hàng",
-     "assistant": "Số phiếu: PXB25110053 (góc trên bên phải)\nMã khách hàng: Không có thông tin mã khách hàng riêng trong phiếu này. Chỉ có thông tin nhà cung cấp là KOIKEYA VIETNAM."},
-    {"user": "Liệt kê sản phẩm có số lượng dưới 1000 dạng bảng",
-     "assistant": "| STT | Mã | Tên sản phẩm | Số lượng |\n| :--- | :--- | :--- | ---: |\n| 1 | 517VS29 | Snack Bắp phô mai | 600 pcs |\n| 2 | 519VS29 | Snack Bắp tương đen | 600 pcs |\n| 3 | 527VS29 | Snack Bắp tỏi | 600 pcs |\n| 4 | 510VS29 | Khoai tây sợi phô mai | 600 pcs |\n| 5 | 524VS29 | Khoai tây vị tôm | 600 pcs |\n| 6 | 526VS29 | Khoai tây vị rong biển | 600 pcs |"},
-    {"user": "Kiểm tra xem tổng 6 sản phẩm trên có bằng 3600 không?",
-     "assistant": "Tính tổng: 600 + 600 + 600 + 600 + 600 + 600 = 3,600 pcs\n\n✓ Đúng, tổng của 6 sản phẩm có số lượng 600 pcs là 3,600 pcs."},
-    {"user": "VS29 là mã sản phẩm hay mã gì?",
-     "assistant": "VS29 không phải là mã sản phẩm độc lập. Đó là phần hậu tố chung trong các mã sản phẩm (500VS29, 517VS29, 519VS29...). Mã sản phẩm đầy đủ bao gồm cả số đầu và VS29."},
-    {"user": "Chuyển thông tin tóm tắt sang format key-value",
-     "assistant": "Số phiếu: PXB25110053\nNgày xuất: 03/11/2025\nNhà cung cấp: KOIKEYA VIETNAM CO., LTD\nSố loại sản phẩm: 8 loại\nTổng số lượng: 11,100 pcs\nĐơn vị tính: pcs (pieces)"},
-    {"user": "Export CSV cho 3 sản phẩm có số lượng cao nhất",
-     "assistant": "STT,Mã sản phẩm,Tên sản phẩm,Số lượng (pcs)\n1,500VS29,\"Snack Bắp Karamucho cay\",2400\n2,508VS29,\"Khoai tây lát cay\",1500\n3,536VS29,\"Khoai tây lát Wasabi\",1500"}
-  ]
-}
 """
     return prompt

@@ -3,10 +3,10 @@ from unsloth import FastVisionModel
 
 # 1. Cấu hình
 LORA_MODEL_ID = (
-    "ha684/qwen2.5-vl-3b-lora-finetuned"  # Tên repo LoRA bạn vừa push ở Phase 1
+    "ha684/qwen3-vl-2b-lora-finetuned"  # Tên repo LoRA bạn vừa push ở Phase 1
 )
-NEW_MODEL_ID = "ha684/qwen2.5-vl-3b-merged-16bit"  # Tên repo mới cho bản Full
-HF_TOKEN = "hf_..."  # Token của bạn (hoặc lấy từ os.environ)
+NEW_MODEL_ID = "ha684/qwen3-vl-2b-1.0"  # Tên repo mới cho bản Full
+HF_TOKEN = "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"  # Token của bạn (hoặc lấy từ os.environ)
 
 # 2. Load lại Model & Adapter
 # Lưu ý: Load ở chế độ 16bit (không phải 4bit) để merge chất lượng tốt nhất
