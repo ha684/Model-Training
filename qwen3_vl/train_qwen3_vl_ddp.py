@@ -218,9 +218,9 @@ def init_model(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
     print("🔧 Configuring LoRA...")
     model = FastVisionModel.get_peft_model(
         model,
-        finetune_vision_layers=False,
-        finetune_language_layers=False,
-        finetune_attention_modules=False,
+        finetune_vision_layers=True,
+        finetune_language_layers=True,
+        finetune_attention_modules=True,
         finetune_mlp_modules=True,
         r=args.lora_r,
         lora_alpha=args.lora_alpha,
