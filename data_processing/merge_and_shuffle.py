@@ -1,10 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Optimized Merge Script: Fixed 'int32 vs int64' mismatch error.
-Strategy: 
-  1. Production: Upsample 3x.
-  2. Others: Take ALL Local Conversations.
-  3. Others: Split the remaining quota equally between Vintern and Legal.
+Optimized Merge Script: Modified to include local conversations in eval set
+with augmentation and balanced sampling from all 3 production data types.
 """
 
 import argparse
@@ -16,6 +13,8 @@ import random
 from pathlib import Path
 import albumentations as A
 import numpy as np
+from collections import defaultdict
+
 # Cấu hình để tối ưu I/O trên Windows
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["HF_DATASETS_TRUST_REMOTE_CODE"] = "1" 
@@ -57,27 +56,22 @@ GLOBAL_FEATURES = Features({
 doc_aug_pipeline = A.Compose([
     # 1. Giả lập chất lượng ảnh kém (Noise, Blur, Compression)
     A.OneOf([
-        A.GaussNoise(std_range=(0.04, 0.20), mean_range=(0.0, 0.0), p=0.5),  # std_range thay vì var_limit
+        A.GaussNoise(std_range=(0.04, 0.20), mean_range=(0.0, 0.0), p=0.5),
         A.GaussianBlur(blur_limit=(3, 5), p=0.5),
-        A.ImageCompression(quality_range=(50, 85), p=0.5),  # quality_range thay vì quality_lower/upper
+        A.ImageCompression(quality_range=(50, 85), p=0.5),
     ], p=0.5),
     
     # 2. Giả lập ánh sáng/màu mực (Sáng tối, Tương phản)
     A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
     
     # 3. Giả lập scan lệch (chỉ xoay rất nhẹ +/- 5 độ, fill viền bằng màu trắng 255)
-    A.SafeRotate(limit=5, border_mode=0, fill=255, p=0.3),  # fill thay vì value/fill_value
+    A.SafeRotate(limit=5, border_mode=0, fill=255, p=0.3),
 ])
 
 def apply_augment(pil_img):
     """Hàm helper để áp dụng albumentations lên PIL Image"""
-    # Convert PIL -> Numpy
     img_arr = np.array(pil_img)
-    
-    # Apply Augmentation
     augmented = doc_aug_pipeline(image=img_arr)["image"]
-    
-    # Convert back Numpy -> PIL
     return Image.fromarray(augmented)
 
 def extract_page_from_pdf(pdf_path: str, page_number: int, output_dir: str, dpi: int = 200) -> str:
@@ -118,6 +112,32 @@ def copy_image_to_cache(source_file: str, image_cache_dir: str) -> str:
         logger.error(f"Failed to process image {source_file}: {e}")
     return None
 
+def get_data_type(source_file: str) -> str:
+    """Identify data type based on source_file pattern"""
+    source_file = str(source_file)
+    
+    # Extract filename from path
+    if "\\" in source_file or "/" in source_file:
+        filename = Path(source_file).name
+    else:
+        filename = source_file
+    
+    # Remove .pdf extension if exists
+    if filename.endswith('.pdf'):
+        base_name = filename[:-4]
+    else:
+        base_name = filename
+    
+    # Check if starts with PGH (KO type)
+    if base_name.startswith("PGH"):
+        return "KO"
+    # Check if starts with DN (SK type)
+    elif base_name.startswith("DN"):
+        return "SK"
+    # Everything else is LT type
+    else:
+        return "LT"
+
 # ==========================================
 # MAPPERS
 # ==========================================
@@ -134,7 +154,7 @@ def transform_production(batch):
     return {
         "image": imgs,
         "text": batch["text"],
-        "source_file": [f"prod_hf_{i}" for i in range(n)], 
+        "source_file": batch["source_file"],
         "page_number": [1] * n,
         "is_multiturn": [False] * n
     }
@@ -150,37 +170,81 @@ def transform_production_with_aug(batch):
     out_pages = []
     out_multiturn = []
 
-    # Iterate qua từng mẫu trong batch
-    for img, txt, src in zip(batch["image"], batch["text"], range(len(batch["image"]))):
+    for img, txt, src in zip(batch["image"], batch["text"], batch["source_file"]):
         
-        # 1. Đảm bảo ảnh gốc là RGB
         if img.mode != "RGB":
             original_img = img.convert("RGB")
         else:
             original_img = img
 
-        # --- COPY 1: ORIGINAL (Giữ nguyên vẹn để mô hình học cái chuẩn) ---
+        # COPY 1: ORIGINAL
         out_imgs.append(original_img)
         out_texts.append(txt)
-        out_sources.append(f"prod_orig_{src}")
+        out_sources.append(src)
         out_pages.append(1)
         out_multiturn.append(False)
 
-        # --- COPY 2: AUGMENTATION 1 (Biến thể 1) ---
+        # COPY 2: AUGMENTATION 1
         aug_img_1 = apply_augment(original_img)
         out_imgs.append(aug_img_1)
-        out_texts.append(txt) # Text giữ nguyên, chỉ đổi ảnh
-        out_sources.append(f"prod_aug1_{src}")
+        out_texts.append(txt)
+        out_sources.append(src)
         out_pages.append(1)
         out_multiturn.append(False)
 
-        # --- COPY 3: AUGMENTATION 2 (Biến thể 2) ---
+        # COPY 3: AUGMENTATION 2
         aug_img_2 = apply_augment(original_img)
         out_imgs.append(aug_img_2)
         out_texts.append(txt)
-        out_sources.append(f"prod_aug2_{src}")
+        out_sources.append(src)
         out_pages.append(1)
         out_multiturn.append(False)
+    
+    return {
+        "image": out_imgs,
+        "text": out_texts,
+        "source_file": out_sources,
+        "page_number": out_pages,
+        "is_multiturn": out_multiturn
+    }
+
+def transform_local_with_aug(batch):
+    """Apply augmentation to local conversations"""
+    out_imgs = []
+    out_texts = []
+    out_sources = []
+    out_pages = []
+    out_multiturn = []
+
+    for img, txt, src, page in zip(batch["image"], batch["text"], batch["source_file"], batch["page_number"]):
+        
+        if img.mode != "RGB":
+            original_img = img.convert("RGB")
+        else:
+            original_img = img
+
+        # COPY 1: ORIGINAL
+        out_imgs.append(original_img)
+        out_texts.append(txt)
+        out_sources.append(src)
+        out_pages.append(page)
+        out_multiturn.append(True)
+
+        # COPY 2: AUGMENTATION 1
+        aug_img_1 = apply_augment(original_img)
+        out_imgs.append(aug_img_1)
+        out_texts.append(txt)
+        out_sources.append(src)
+        out_pages.append(page)
+        out_multiturn.append(True)
+
+        # COPY 3: AUGMENTATION 2
+        aug_img_2 = apply_augment(original_img)
+        out_imgs.append(aug_img_2)
+        out_texts.append(txt)
+        out_sources.append(src)
+        out_pages.append(page)
+        out_multiturn.append(True)
     
     return {
         "image": out_imgs,
@@ -286,7 +350,7 @@ def main():
     parser.add_argument("--dataset-name")
     parser.add_argument("--output-dir", default="./merged_dataset")
     parser.add_argument("--production-ratio", type=float, default=0.65)
-    parser.add_argument("--test-size", type=int, default=100)
+    parser.add_argument("--test-size", type=int, default=150)
     parser.add_argument("--image-cache-dir", default=None)
     parser.add_argument("--private", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
@@ -299,19 +363,44 @@ def main():
 
     common_cols = ["image", "text", "source_file", "page_number", "is_multiturn"]
 
-    # 1. LOAD & TRANSFORM PRODUCTION
-    logger.info("--- Processing Production Data ---")
-    ds_prod = load_dataset("ha684/senko2")
+    # 1. LOAD PRODUCTION DATA
+    logger.info("--- Loading Production Data ---")
+    ds_prod = load_dataset("ha684/senko1")
     ds_prod_full = concatenate_datasets([ds_prod["train"], ds_prod["validation"]])
     
-    full_indices = list(range(len(ds_prod_full)))
-    random.shuffle(full_indices)
-    test_indices = full_indices[:args.test_size]
-    train_indices = full_indices[args.test_size:]
+    # Group by data type
+    logger.info("Grouping production data by type (LT, KO, SK)...")
+    type_groups = defaultdict(list)
+    
+    for idx in range(len(ds_prod_full)):
+        source_file = ds_prod_full[idx]["source_file"]
+        data_type = get_data_type(source_file)
+        type_groups[data_type].append(idx)
+    
+    logger.info(f"Data type distribution:")
+    for dtype, indices in type_groups.items():
+        logger.info(f"  {dtype}: {len(indices)} samples")
+    
+    # Sample test set: 50 from each type
+    test_indices = []
+    samples_per_type = args.test_size // 3  # 50 samples per type for 150 total
+    
+    for dtype in ["LT", "KO", "SK"]:
+        if dtype in type_groups:
+            indices = type_groups[dtype].copy()
+            random.shuffle(indices)
+            test_indices.extend(indices[:samples_per_type])
+    
+    # Get all remaining indices for train
+    train_indices = [i for i in range(len(ds_prod_full)) if i not in test_indices]
+    
+    logger.info(f"Production test samples: {len(test_indices)}")
+    logger.info(f"Production train samples: {len(train_indices)}")
     
     ds_prod_test = ds_prod_full.select(test_indices)
     ds_prod_train = ds_prod_full.select(train_indices)
     
+    # Transform production data
     logger.info("Mapping and Casting production data...")
     ds_prod_train = ds_prod_train.map(
         transform_production_with_aug,
@@ -327,10 +416,36 @@ def main():
         remove_columns=[c for c in ds_prod_test.column_names if c not in common_cols]
     ).cast(GLOBAL_FEATURES)
 
-    # 2. LOAD & TRANSFORM OTHER DATASETS
+    # 2. LOAD LOCAL CONVERSATIONS
+    logger.info("--- Processing Local Conversations ---")
+    features_local_gen = Features({
+        "image": Value("string"), 
+        "text": Value("string"),
+        "source_file": Value("string"),
+        "page_number": Value("int32"),
+        "is_multiturn": Value("bool"),
+    })
+    
+    ds_local = Dataset.from_generator(
+        lambda: local_data_generator(args.conversations, image_cache_dir),
+        features=features_local_gen
+    )
+    ds_local = ds_local.cast(GLOBAL_FEATURES)
+    
+    logger.info(f"Total local conversations: {len(ds_local)}")
+    
+    # Apply augmentation to all local data (all goes to train)
+    ds_local_train = ds_local.map(
+        transform_local_with_aug,
+        batched=True,
+        batch_size=20,
+        remove_columns=[c for c in ds_local.column_names if c not in common_cols]
+    ).cast(GLOBAL_FEATURES)
+
+    # 3. LOAD & TRANSFORM OTHER DATASETS
     logger.info("--- Processing Auxiliary Data ---")
     
-    # 2a. Vintern
+    # 3a. Vintern
     logger.info("Loading Vintern...")
     try:
         ds_vintern_1 = load_dataset("5CD-AI/Vintern-1B-Benchmark-gpt4o-score", split="OpenViVQA_dev")
@@ -350,7 +465,7 @@ def main():
             features=GLOBAL_FEATURES
         )
     
-    # 2b. Legal Cleaned
+    # 3b. Legal Cleaned
     logger.info("Loading Legal Cleaned...")
     try:
         ds_legal = load_dataset("ha684/legal_cleaned", split="train")
@@ -367,46 +482,29 @@ def main():
             features=GLOBAL_FEATURES
         )
 
-    # 2c. Local Conversations
-    logger.info("Processing Local Conversations...")
-    features_local_gen = Features({
-        "image": Value("string"), 
-        "text": Value("string"),
-        "source_file": Value("string"),
-        "page_number": Value("int32"),
-        "is_multiturn": Value("bool"),
-    })
-    
-    ds_local = Dataset.from_generator(
-        lambda: local_data_generator(args.conversations, image_cache_dir),
-        features=features_local_gen
-    )
-    ds_local = ds_local.cast(GLOBAL_FEATURES)
-
-    # 3. MERGE & BALANCE (CUSTOM STRATEGY)
+    # 4. MERGE & BALANCE (CUSTOM STRATEGY)
     logger.info("--- Balancing Datasets ---")
     
     n_prod_train = len(ds_prod_train)
-    n_local = len(ds_local)
+    n_local_train = len(ds_local_train)
     
-    logger.info(f"Production count: {n_prod_train}")
-    logger.info(f"Local Conversations count: {n_local}")
+    logger.info(f"Production count (after augmentation): {n_prod_train}")
+    logger.info(f"Local Conversations count (after augmentation): {n_local_train}")
     
-    # B. CALCULATE QUOTA FOR OTHERS
-    # n_prod_train / total = 0.65 -> total = n_prod_train / 0.65
+    # Calculate target total
     target_total = int(n_prod_train / args.production_ratio)
     target_others_total = target_total - n_prod_train
     
     logger.info(f"Target Total: ~{target_total}")
     logger.info(f"Target 'Others' Quota: {target_others_total}")
     
-    # C. FILL QUOTA: PRIORITY LOCAL -> SPLIT REMAINDER (VINTERN + LEGAL)
-    if n_local >= target_others_total:
+    # Fill quota: Priority Local -> Split remainder (Vintern + Legal)
+    if n_local_train >= target_others_total:
         logger.info("Local conversations fill the entire quota!")
-        ds_others_balanced = ds_local.shuffle(seed=args.seed).select(range(target_others_total))
+        ds_others_balanced = ds_local_train.shuffle(seed=args.seed).select(range(target_others_total))
     else:
         logger.info("Taking ALL Local Conversations.")
-        remaining_slots = target_others_total - n_local
+        remaining_slots = target_others_total - n_local_train
         
         # Split remaining between Vintern and Legal
         target_each = remaining_slots // 2
@@ -427,14 +525,15 @@ def main():
         ds_legal_sampled = ds_legal.select(indices_legal[:take_legal])
         
         # Combine Others
-        ds_others_balanced = concatenate_datasets([ds_local, ds_vintern_sampled, ds_legal_sampled])
+        ds_others_balanced = concatenate_datasets([ds_local_train, ds_vintern_sampled, ds_legal_sampled])
 
-    # D. FINAL MERGE
+    # Final merge for train
     ds_train_final = concatenate_datasets([ds_prod_train, ds_others_balanced])
 
-    # 4. SHUFFLE & SAVE
+    # 5. SHUFFLE & SAVE
     logger.info("--- Finalizing ---")
     ds_train_final = ds_train_final.shuffle(seed=args.seed)
+    ds_prod_test = ds_prod_test.shuffle(seed=args.seed)
     
     final_dict = DatasetDict({
         "train": ds_train_final,

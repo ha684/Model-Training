@@ -7,3 +7,4 @@ mlflow
 optuna
 optuna-integration[mlflow]
 dagshub
+jiwer

@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+from functools import partial
 import os
 from typing import Any, Dict, Tuple
 import sys
@@ -32,7 +33,7 @@ import shutil
 import torch.distributed as dist
 
 from config.fields_config import get_extraction_prompt
-from qwen3_vl.utils import LazyVisionDataset
+from qwen3_vl.utils import LazyVisionDataset, compute_metrics_cer
 
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
@@ -351,7 +352,7 @@ def build_trainer(
         "save_strategy": "steps",
         "save_steps": args.eval_steps,
         "load_best_model_at_end": True,
-        "metric_for_best_model": "eval_loss",
+        "metric_for_best_model": "eval_cer",
         "greater_is_better": False,
         "save_total_limit": 1,
         "run_name": args.mlflow_run_name,
@@ -392,7 +393,7 @@ def build_trainer(
     else:
         print(f"   - Epochs: {args.epochs}")
     print(f"   - Max sequence length: {args.max_seq_length}")
-
+    compute_metrics_fn = partial(compute_metrics_cer, tokenizer=tokenizer)
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
@@ -400,9 +401,10 @@ def build_trainer(
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         args=training_args,
+        compute_metrics=compute_metrics_fn,
         callbacks=[
             EarlyStoppingCallback(
-                early_stopping_patience=5, early_stopping_threshold=0.01
+                early_stopping_patience=5, early_stopping_threshold=0.0001
             )
         ],
         optimizers=(optimizer, scheduler),
@@ -462,7 +464,6 @@ def main():
 
     try:
         from unsloth import unsloth_train
-
         trainer_stats = unsloth_train(trainer)
     except ImportError:
         print("⚠️  unsloth not available. Using trl's trainer.")
@@ -470,7 +471,6 @@ def main():
         
     if rank == 0:
         trainer.args.report_to = []
-    
     
     metrics = trainer.evaluate()
     

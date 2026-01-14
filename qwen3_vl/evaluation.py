@@ -31,16 +31,12 @@ load_dotenv()
 
 HF_TOKEN = os.getenv("hf_token")
 base_url = os.getenv("base_url", "https://a1aacb296bc6.ngrok-free.app")
-# Configuration
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "ha684/qwen3-vl-2b-1.0"
+MODEL_NAME = "ha684/qwen3-vl-2b-1.1"
 DATASET_NAME = "ha684/senko2"
 DATASET_SPLIT = "validation"
-
-# Concurrent settings - optimized for 2xT4 (15GB each)
-# With 2B model + TP2, you can handle ~8-12 concurrent requests
-MAX_CONCURRENT_REQUESTS = 5
-TIMEOUT = 180  # seconds
+MAX_CONCURRENT_REQUESTS = 4
+TIMEOUT = 180
 
 
 def image_to_base64(image: Image.Image) -> str:
@@ -71,7 +67,8 @@ async def call_vllm_api_async(
             }
         ],
         "max_tokens": 4096,
-        "temperature": 0.0,
+        "temperature": 1.5,
+        "min_p": 0.1,
     }
 
     try:
@@ -83,7 +80,6 @@ async def call_vllm_api_async(
             VLLM_API_URL,
             json=payload,
             timeout=aiohttp.ClientTimeout(total=TIMEOUT),
-            # headers=headers,
         ) as response:
             response.raise_for_status()
             result = await response.json()
@@ -99,7 +95,6 @@ def parse_model_output(output: str) -> Dict:
         return None
 
     try:
-        # Remove markdown code blocks if present
         cleaned = output.strip()
         if cleaned.startswith("```json"):
             cleaned = cleaned[7:]
@@ -131,7 +126,6 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
     """Compare metadata fields between prediction and ground truth."""
     results = {}
 
-    # Handle both list and dict formats
     if isinstance(gt_meta, list):
         gt_meta = gt_meta[0] if gt_meta else {}
     if isinstance(pred_meta, list):
@@ -293,10 +287,8 @@ async def process_batch(
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Update progress bar
     pbar.update(len(batch_examples))
 
-    # Filter out exceptions
     valid_results = []
     for i, result in enumerate(results):
         if isinstance(result, Exception):
@@ -313,17 +305,13 @@ async def evaluate_dataset_async(dataset, prompt: str):
     total_examples = len(dataset)
     all_results = []
 
-    # Create aiohttp session with connection pooling
     connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS, limit_per_host=MAX_CONCURRENT_REQUESTS)
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        # Create progress bar
         pbar = atqdm(total=total_examples, desc="Evaluating")
 
-        # Process in batches
         for i in range(0, total_examples, MAX_CONCURRENT_REQUESTS):
-            # Convert batch from dict of lists to list of dicts
             batch_slice = dataset[i : i + MAX_CONCURRENT_REQUESTS]
             batch = []
             batch_size = min(MAX_CONCURRENT_REQUESTS, total_examples - i)
@@ -355,11 +343,9 @@ def main():
 
     prompt = get_extraction_prompt()
 
-    # Run async evaluation
     print("\nStarting evaluation...")
     results = asyncio.run(evaluate_dataset_async(dataset, prompt))
 
-    # Calculate metrics
     total_examples = len(dataset)
     successful_parses = 0
     metadata_field_scores = defaultdict(list)
@@ -383,7 +369,6 @@ def main():
             total_rows_correct += rows_correct
             total_rows_count += rows_total
 
-    # Summary
     print("\n" + "=" * 80)
     print("EVALUATION SUMMARY")
     print("=" * 80)
@@ -414,7 +399,6 @@ def main():
     else:
         print("  No table rows to evaluate")
 
-    # Save simplified results
     output_file = "evaluation_results.json"
     simplified_results = []
     for i, r in enumerate(results):
