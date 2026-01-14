@@ -6,7 +6,7 @@ This pipeline processes PDF files and images, extracts structured data
 using Gemini Vision API, and saves results to JSON with checkpoint support.
 
 Usage:
-    python pipeline.py --input ./data --output ./output/results.json --api-keys ./api_keys.txt
+    python data_processing/pipeline.py --input ./data --output ./output/results.json --api-keys ./api_keys.txt
 """
 
 import argparse
@@ -312,7 +312,7 @@ def run_pipeline(
 
             try:
                 genai.configure(api_key=current_key)
-                model = genai.GenerativeModel("gemini-3-flash-preview")
+                model = genai.GenerativeModel("gemini-3-pro-preview")
 
                 success = process_file(
                     file_path=file_path,

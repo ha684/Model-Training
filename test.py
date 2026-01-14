@@ -1,25 +1,45 @@
-import json
+import pandas as pd
+import sys
+import os
 
-# Giả lập chuỗi JSON "xấu xí" bạn vừa nhận được
-messy_json_str = """
-{
-    "assistant": "{\\\"nha_cung_cap\\\": {\\\"ten_cong_ty\\\": \\\"KOIKEYA...\\\"}}"
-}
-"""
+def convert_parquet_to_csv(parquet_file, csv_file=None):
+    """
+    Convert a Parquet file to CSV format, preserving all columns exactly.
+    
+    Args:
+        parquet_file: Path to the input Parquet file
+        csv_file: Path to the output CSV file (optional, defaults to same name with .csv extension)
+    """
+    try:
+        # Read the Parquet file
+        df = pd.read_parquet(parquet_file)
+        
+        # If no output file specified, use the same name with .csv extension
+        if csv_file is None:
+            csv_file = os.path.splitext(parquet_file)[0] + '.csv'
+        
+        # Write to CSV, preserving all columns
+        df.to_csv(csv_file, index=False)
+        
+        print(f"Successfully converted {parquet_file} to {csv_file}")
+        print(f"Columns preserved: {list(df.columns)}")
+        print(f"Total rows: {len(df)}")
+        
+    except FileNotFoundError:
+        print(f"Error: File '{parquet_file}' not found.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error during conversion: {str(e)}")
+        sys.exit(1)
 
-# Bước 1: Load file tổng (Level 1)
-data = json.loads(messy_json_str)
-assistant_response = data["assistant"]
-
-print("--- Level 1: Lấy nội dung Assistant (Dạng chuỗi) ---")
-print(assistant_response) 
-# Kết quả vẫn sẽ có dấu \ nhưng bớt đi 1 lớp
-
-# Bước 2: Load nội dung Assistant (Level 2)
-# Đây là bước các ứng dụng sau này sẽ làm để lấy dữ liệu sạch
-try:
-    inner_data = json.loads(assistant_response)
-    print("\n--- Level 2: Dữ liệu sạch (Dạng Object) ---")
-    print(json.dumps(inner_data, indent=2, ensure_ascii=False))
-except:
-    print("Đây là text thường, không phải JSON")
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python script.py <parquet_file> [csv_file]")
+        print("Example: python script.py data.parquet")
+        print("Example: python script.py data.parquet output.csv")
+        sys.exit(1)
+    
+    parquet_file = sys.argv[1]
+    csv_file = sys.argv[2] if len(sys.argv) > 2 else None
+    
+    convert_parquet_to_csv(parquet_file, csv_file)

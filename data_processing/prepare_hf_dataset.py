@@ -43,6 +43,39 @@ def load_results(results_path: str) -> List[Dict]:
     return results
 
 
+def find_source_file(original_path: str, search_dirs: List[str]) -> Optional[str]:
+    """Find the actual file path by searching in specified directories.
+    
+    Args:
+        original_path: Original path from the results JSON
+        search_dirs: List of directories to search in
+        
+    Returns:
+        Absolute path to the file if found, None otherwise
+    """
+    # Get just the filename
+    filename = Path(original_path).name
+    
+    # First try the original path
+    if os.path.exists(original_path):
+        return str(Path(original_path).resolve())
+    
+    # Search in all directories recursively
+    for search_dir in search_dirs:
+        search_path = Path(search_dir)
+        if not search_path.exists():
+            continue
+            
+        # Search recursively for the file
+        for file_path in search_path.rglob(filename):
+            if file_path.is_file():
+                logger.info(f"Found file: {original_path} -> {file_path}")
+                return str(file_path.resolve())
+    
+    logger.warning(f"File not found: {filename} (searched in {search_dirs})")
+    return None
+
+
 def extract_page_from_pdf(
     pdf_path: str, page_number: int, output_dir: str, dpi: int = 200
 ) -> Optional[str]:
@@ -51,6 +84,9 @@ def extract_page_from_pdf(
     Returns the path to the saved image file, or None on failure.
     """
     try:
+        # Convert to absolute path
+        pdf_path = str(Path(pdf_path).resolve())
+        
         # Create a unique filename based on source path and page number
         hash_input = f"{pdf_path}_{page_number}"
         file_hash = hashlib.md5(hash_input.encode()).hexdigest()[:12]
@@ -59,6 +95,11 @@ def extract_page_from_pdf(
         # Skip if already extracted
         if os.path.exists(output_path):
             return output_path
+
+        # Verify PDF exists
+        if not os.path.exists(pdf_path):
+            logger.error(f"PDF file not found: {pdf_path}")
+            return None
 
         # pdf2image uses 1-based indexing
         images = convert_from_path(
@@ -82,7 +123,9 @@ def create_text_annotation(metadata: List[Dict], table_rows: List[Dict]) -> str:
     return json.dumps(annotation, ensure_ascii=False, indent=2)
 
 
-def prepare_dataset_rows(results: List[Dict], image_cache_dir: str) -> List[Dict]:
+def prepare_dataset_rows(
+    results: List[Dict], image_cache_dir: str, search_dirs: List[str]
+) -> List[Dict]:
     """Convert results to dataset rows with image paths and text columns.
 
     Images are saved to disk to avoid memory issues with large datasets.
@@ -92,14 +135,14 @@ def prepare_dataset_rows(results: List[Dict], image_cache_dir: str) -> List[Dict
     # Ensure image cache directory exists
     os.makedirs(image_cache_dir, exist_ok=True)
     logger.info(f"Saving extracted images to: {image_cache_dir}")
+    logger.info(f"Searching for source files in: {search_dirs}")
 
     for result in tqdm(results, desc="Processing results"):
         source_file = result.get("source_file")
         source_type = result.get("source_type")
         page_number = result.get("page_number", 1)
-        metadata = result.get("metadata", [])
-        table_rows = result.get("table_rows", [])
-
+        conversation = result.get("conversation", [])
+        
         # Skip if there's an error in the result
         if "error" in result:
             logger.warning(
@@ -107,37 +150,43 @@ def prepare_dataset_rows(results: List[Dict], image_cache_dir: str) -> List[Dict
             )
             continue
 
+        # Find the actual file path
+        actual_file = find_source_file(source_file, search_dirs)
+        if actual_file is None:
+            logger.warning(f"Skipping {source_file} - file not found")
+            continue
+
         # Get image path (images are saved to disk to avoid memory issues)
         image_path = None
         if source_type == "pdf":
             image_path = extract_page_from_pdf(
-                source_file, page_number, image_cache_dir
+                actual_file, page_number, image_cache_dir
             )
         elif source_type == "image":
             # For image sources, copy to cache dir to ensure consistent handling
             try:
-                if os.path.exists(source_file):
-                    hash_input = f"{source_file}"
+                if os.path.exists(actual_file):
+                    hash_input = f"{actual_file}"
                     file_hash = hashlib.md5(hash_input.encode()).hexdigest()[:12]
-                    ext = Path(source_file).suffix or ".png"
+                    ext = Path(actual_file).suffix or ".png"
                     cached_path = os.path.join(image_cache_dir, f"img_{file_hash}{ext}")
 
                     if not os.path.exists(cached_path):
                         # Open, convert to RGB if needed, and save
-                        with Image.open(source_file) as img:
+                        with Image.open(actual_file) as img:
                             if img.mode in ("RGBA", "P"):
                                 img = img.convert("RGB")
                             img.save(cached_path, format="PNG")
                     image_path = cached_path
             except Exception as e:
-                logger.error(f"Failed to process image {source_file}: {e}")
+                logger.error(f"Failed to process image {actual_file}: {e}")
 
         if image_path is None:
             logger.warning(f"Failed to get image for {source_file} page {page_number}")
             continue
 
         # Create text annotation
-        text = create_text_annotation(metadata, table_rows)
+        text = json.dumps(conversation, ensure_ascii=False, indent=2)
 
         # Add to dataset (using file path instead of PIL Image object)
         dataset_rows.append(
@@ -246,6 +295,12 @@ Examples:
         default=None,
         help="Directory to cache extracted images (default: <output-dir>/images)",
     )
+    parser.add_argument(
+        "--search-dirs",
+        nargs="+",
+        default=["data"],
+        help="Directories to search for source files (default: ['data'])",
+    )
 
     args = parser.parse_args()
 
@@ -261,7 +316,7 @@ Examples:
     image_cache_dir = args.image_cache_dir or str(output_dir / "images")
 
     # Prepare dataset rows (saves images to disk to avoid memory issues)
-    dataset_rows = prepare_dataset_rows(results, image_cache_dir)
+    dataset_rows = prepare_dataset_rows(results, image_cache_dir, args.search_dirs)
 
     if not dataset_rows:
         logger.error("No valid dataset rows created!")

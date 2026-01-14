@@ -32,7 +32,7 @@ load_dotenv()
 HF_TOKEN = os.getenv("hf_token")
 base_url = os.getenv("base_url", "https://a1aacb296bc6.ngrok-free.app")
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "ha684/qwen3-vl-2b-1.1"
+MODEL_NAME = "ha684/qwen3-vl-2b-1.2"
 DATASET_NAME = "ha684/senko2"
 DATASET_SPLIT = "validation"
 MAX_CONCURRENT_REQUESTS = 3
@@ -122,6 +122,28 @@ def normalize_value(value: Any) -> Any:
     return value
 
 
+def normalize_ar_code(value: str) -> str:
+    """
+    Normalize AR code for comparison.
+    Extract the AR prefix part (e.g., AR5239) and ignore underscores/suffixes.
+    Examples:
+    - AR5239_141 -> ar5239
+    - AR5239___141 -> ar5239
+    - AR5239 -> ar5239
+    """
+    if value is None:
+        return None
+
+    normalized = value.strip().lower()
+
+    # Split by underscore and take the first part (the AR code)
+    if "_" in normalized:
+        ar_part = normalized.split("_")[0]
+        return ar_part
+
+    return normalized
+
+
 def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
     """Compare metadata fields between prediction and ground truth."""
     results = {}
@@ -132,11 +154,16 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
         pred_meta = pred_meta[0] if pred_meta else {}
 
     for field in gt_meta.keys():
-        pred_val = normalize_value(pred_meta.get(field))
-        gt_val = normalize_value(gt_meta.get(field))
-
         pred_original = pred_meta.get(field)
         gt_original = gt_meta.get(field)
+
+        # Special handling for Mã AR field
+        if field == "Mã AR":
+            pred_val = normalize_ar_code(pred_original)
+            gt_val = normalize_ar_code(gt_original)
+        else:
+            pred_val = normalize_value(pred_original)
+            gt_val = normalize_value(gt_original)
 
         if gt_val is None and pred_val is None:
             correct = True
@@ -161,7 +188,7 @@ def compare_table_rows(
     Compare table rows between prediction and ground truth.
     A row is correct if:
     - Mã FG matches exactly (after normalization)
-    - Either Số lượng(Thùng) OR Số lượng(Pcs) matches
+    - The quantity matches (regardless of whether it's in Thùng or Pcs column)
     """
     if not gt_rows:
         return 0, 0, []
@@ -177,6 +204,9 @@ def compare_table_rows(
         gt_qty_thung = normalize_value(gt_row.get("Số lượng(Thùng)"))
         gt_qty_pcs = normalize_value(gt_row.get("Số lượng(Pcs)"))
 
+        # Get the actual quantity value from ground truth (whichever is not None)
+        gt_qty = gt_qty_thung if gt_qty_thung is not None else gt_qty_pcs
+
         row_detail = {"gt_fg": gt_fg, "match": False, "errors": []}
 
         if gt_fg not in pred_by_fg:
@@ -185,26 +215,23 @@ def compare_table_rows(
             continue
 
         pred_row = pred_by_fg[gt_fg]
-
         pred_qty_thung = normalize_value(pred_row.get("Số lượng(Thùng)"))
         pred_qty_pcs = normalize_value(pred_row.get("Số lượng(Pcs)"))
 
-        qty_thung_match = (
-            (pred_qty_thung == gt_qty_thung)
-            if (pred_qty_thung is not None and gt_qty_thung is not None)
+        # Get the actual quantity value from prediction (whichever is not None)
+        pred_qty = pred_qty_thung if pred_qty_thung is not None else pred_qty_pcs
+
+        # Check if quantities match (regardless of column)
+        qty_match = (
+            (gt_qty == pred_qty)
+            if (gt_qty is not None and pred_qty is not None)
             else False
         )
-        qty_pcs_match = (
-            (pred_qty_pcs == gt_qty_pcs)
-            if (pred_qty_pcs is not None and gt_qty_pcs is not None)
-            else False
-        )
-        qty_match = qty_thung_match or qty_pcs_match
 
         if not qty_match:
             row_detail["errors"].append(
-                f"Quantity mismatch: Thùng(pred={pred_row.get('Số lượng(Thùng)')} vs gt={gt_row.get('Số lượng(Thùng)')}), "
-                f"Pcs(pred={pred_row.get('Số lượng(Pcs)')} vs gt={gt_row.get('Số lượng(Pcs)')})"
+                f"Quantity mismatch: pred={pred_qty} (Thùng={pred_row.get('Số lượng(Thùng)')}, Pcs={pred_row.get('Số lượng(Pcs)')}) "
+                f"vs gt={gt_qty} (Thùng={gt_row.get('Số lượng(Thùng)')}, Pcs={gt_row.get('Số lượng(Pcs)')})"
             )
 
         if qty_match:
@@ -232,7 +259,7 @@ async def evaluate_single_async(
 
     # Check if ground truth has table_rows
     gt_has_table_rows = bool(gt_data.get("table_rows"))
-    
+
     # Skip evaluation if label doesn't have table_rows
     if not gt_has_table_rows:
         return {
@@ -327,7 +354,9 @@ async def evaluate_dataset_async(dataset, prompt: str):
     total_examples = len(dataset)
     all_results = []
 
-    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS, limit_per_host=MAX_CONCURRENT_REQUESTS)
+    connector = aiohttp.TCPConnector(
+        limit=MAX_CONCURRENT_REQUESTS, limit_per_host=MAX_CONCURRENT_REQUESTS
+    )
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
@@ -341,11 +370,15 @@ async def evaluate_dataset_async(dataset, prompt: str):
                 example = {
                     "image": batch_slice["image"][j],
                     "text": batch_slice["text"][j],
-                    "source_file": batch_slice.get("source_file", [None] * batch_size)[j],
-                    "page_number": batch_slice.get("page_number", [None] * batch_size)[j],
+                    "source_file": batch_slice.get("source_file", [None] * batch_size)[
+                        j
+                    ],
+                    "page_number": batch_slice.get("page_number", [None] * batch_size)[
+                        j
+                    ],
                 }
                 batch.append(example)
-            
+
             batch_results = await process_batch(session, batch, prompt, pbar)
             all_results.extend(batch_results)
 
@@ -357,7 +390,11 @@ async def evaluate_dataset_async(dataset, prompt: str):
 def main():
     """Main evaluation loop."""
     print(f"Loading dataset: {DATASET_NAME} ({DATASET_SPLIT})")
-    dataset = load_dataset(DATASET_NAME, split=DATASET_SPLIT)
+    dataset = load_dataset(
+        "parquet", 
+        data_files={"validation": f"hf://datasets/{DATASET_NAME}/data/validation-*.parquet"},
+        split="validation"
+    )
 
     print(f"Dataset loaded: {len(dataset)} examples")
     print(f"Columns: {dataset.column_names}")
@@ -407,7 +444,9 @@ def main():
     print(f"Skipped examples (no table_rows in GT): {skipped_examples}")
     print(f"Evaluated examples: {evaluated_examples}")
     print(
-        f"Successful parses: {successful_parses}/{evaluated_examples} ({100 * successful_parses / evaluated_examples:.1f}%)" if evaluated_examples > 0 else "Successful parses: 0/0"
+        f"Successful parses: {successful_parses}/{evaluated_examples} ({100 * successful_parses / evaluated_examples:.1f}%)"
+        if evaluated_examples > 0
+        else "Successful parses: 0/0"
     )
 
     print("\n--- METADATA FIELD ACCURACY ---")
@@ -436,16 +475,41 @@ def main():
     simplified_results = []
     for i, r in enumerate(results):
         if r is not None:
-            simplified_results.append(
-                {
-                    "source_file": r.get("source_file", f"example_{i}"),
-                    "page_number": r.get("page_number"),
-                    "model_response": r.get("model_response"),
-                    "label": r.get("label"),
-                    "success": r.get("success", False),
-                    "skipped": r.get("skipped", False),
-                }
-            )
+            # Only save results that have errors
+            has_error = False
+
+            # Check if parsing failed
+            if not r.get("success", False) and not r.get("skipped", False):
+                has_error = True
+
+            # Check if any metadata field is incorrect
+            if r.get("success", False):
+                for field, score_info in r.get("metadata_scores", {}).items():
+                    if not score_info["correct"]:
+                        has_error = True
+                        break
+
+                # Check if any table rows are incorrect
+                if r.get("table_rows_total", 0) > 0:
+                    if r.get("table_rows_correct", 0) < r.get("table_rows_total", 0):
+                        has_error = True
+
+            # Only append if there's an error
+            if has_error:
+                simplified_results.append(
+                    {
+                        "source_file": r.get("source_file", f"example_{i}"),
+                        "page_number": r.get("page_number"),
+                        "model_response": r.get("model_response"),
+                        "label": r.get("label"),
+                        "success": r.get("success", False),
+                        "skipped": r.get("skipped", False),
+                        "metadata_scores": r.get("metadata_scores", {}),
+                        "table_rows_correct": r.get("table_rows_correct", 0),
+                        "table_rows_total": r.get("table_rows_total", 0),
+                        "row_details": r.get("row_details", []),
+                    }
+                )
 
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(
@@ -455,6 +519,7 @@ def main():
                     "skipped_examples": skipped_examples,
                     "evaluated_examples": evaluated_examples,
                     "successful_parses": successful_parses,
+                    "total_errors": len(simplified_results),
                     "metadata_accuracy": {
                         k: np.mean(v) * 100 for k, v in metadata_field_scores.items()
                     },
@@ -462,7 +527,7 @@ def main():
                     if total_rows_count > 0
                     else 0,
                 },
-                "results": simplified_results,
+                "errors": simplified_results,
             },
             f,
             ensure_ascii=False,
@@ -470,6 +535,7 @@ def main():
         )
 
     print(f"\nDetailed results saved to: {output_file}")
+    print(f"Total errors saved: {len(simplified_results)}")
 
 
 if __name__ == "__main__":
