@@ -35,7 +35,7 @@ VLLM_API_URL = f"{base_url}/v1/chat/completions"
 MODEL_NAME = "ha684/qwen3-vl-2b-1.1"
 DATASET_NAME = "ha684/senko2"
 DATASET_SPLIT = "validation"
-MAX_CONCURRENT_REQUESTS = 4
+MAX_CONCURRENT_REQUESTS = 3
 TIMEOUT = 180
 
 
@@ -230,12 +230,31 @@ async def evaluate_single_async(
     except:
         return None
 
+    # Check if ground truth has table_rows
+    gt_has_table_rows = bool(gt_data.get("table_rows"))
+    
+    # Skip evaluation if label doesn't have table_rows
+    if not gt_has_table_rows:
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "No table_rows in ground truth",
+            "metadata_scores": {},
+            "table_rows_correct": 0,
+            "table_rows_total": 0,
+            "model_response": None,
+            "label": gt_data,
+            "source_file": source_file,
+            "page_number": page_number,
+        }
+
     model_output = await call_vllm_api_async(session, image, prompt)
     pred_data = parse_model_output(model_output)
 
     if pred_data is None:
         return {
             "success": False,
+            "skipped": False,
             "metadata_scores": {},
             "table_rows_correct": 0,
             "table_rows_total": len(gt_data.get("table_rows", [])),
@@ -245,16 +264,19 @@ async def evaluate_single_async(
             "page_number": page_number,
         }
 
+    # Evaluate metadata
     metadata_scores = compare_metadata(
         pred_data.get("metadata", {}), gt_data.get("metadata", {})
     )
 
+    # Evaluate table rows
     rows_correct, rows_total, row_details = compare_table_rows(
         pred_data.get("table_rows", []), gt_data.get("table_rows", [])
     )
 
     return {
         "success": True,
+        "skipped": False,
         "metadata_scores": metadata_scores,
         "table_rows_correct": rows_correct,
         "table_rows_total": rows_total,
@@ -348,6 +370,7 @@ def main():
 
     total_examples = len(dataset)
     successful_parses = 0
+    skipped_examples = 0
     metadata_field_scores = defaultdict(list)
     total_rows_correct = 0
     total_rows_count = 0
@@ -355,6 +378,11 @@ def main():
     for idx, result in enumerate(results):
         if result is None:
             print(f"\n[{idx}] Ground truth parsing failed")
+            continue
+
+        # Skip examples without table_rows in ground truth
+        if result.get("skipped", False):
+            skipped_examples += 1
             continue
 
         if result["success"]:
@@ -369,12 +397,17 @@ def main():
             total_rows_correct += rows_correct
             total_rows_count += rows_total
 
+    # Calculate evaluated examples (excluding skipped)
+    evaluated_examples = total_examples - skipped_examples
+
     print("\n" + "=" * 80)
     print("EVALUATION SUMMARY")
     print("=" * 80)
     print(f"\nTotal examples: {total_examples}")
+    print(f"Skipped examples (no table_rows in GT): {skipped_examples}")
+    print(f"Evaluated examples: {evaluated_examples}")
     print(
-        f"Successful parses: {successful_parses}/{total_examples} ({100 * successful_parses / total_examples:.1f}%)"
+        f"Successful parses: {successful_parses}/{evaluated_examples} ({100 * successful_parses / evaluated_examples:.1f}%)" if evaluated_examples > 0 else "Successful parses: 0/0"
     )
 
     print("\n--- METADATA FIELD ACCURACY ---")
@@ -410,6 +443,7 @@ def main():
                     "model_response": r.get("model_response"),
                     "label": r.get("label"),
                     "success": r.get("success", False),
+                    "skipped": r.get("skipped", False),
                 }
             )
 
@@ -418,6 +452,8 @@ def main():
             {
                 "summary": {
                     "total_examples": total_examples,
+                    "skipped_examples": skipped_examples,
+                    "evaluated_examples": evaluated_examples,
                     "successful_parses": successful_parses,
                     "metadata_accuracy": {
                         k: np.mean(v) * 100 for k, v in metadata_field_scores.items()

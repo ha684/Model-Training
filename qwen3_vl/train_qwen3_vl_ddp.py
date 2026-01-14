@@ -352,7 +352,7 @@ def build_trainer(
         "save_strategy": "steps",
         "save_steps": args.eval_steps,
         "load_best_model_at_end": True,
-        "metric_for_best_model": "eval_cer",
+        "metric_for_best_model": "eval_loss",
         "greater_is_better": False,
         "save_total_limit": 1,
         "run_name": args.mlflow_run_name,
@@ -393,7 +393,7 @@ def build_trainer(
     else:
         print(f"   - Epochs: {args.epochs}")
     print(f"   - Max sequence length: {args.max_seq_length}")
-    compute_metrics_fn = partial(compute_metrics_cer, tokenizer=tokenizer)
+    # compute_metrics_fn = partial(compute_metrics_cer, tokenizer=tokenizer)
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
@@ -401,10 +401,10 @@ def build_trainer(
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         args=training_args,
-        compute_metrics=compute_metrics_fn,
+        # compute_metrics=compute_metrics_fn,
         callbacks=[
             EarlyStoppingCallback(
-                early_stopping_patience=5, early_stopping_threshold=0.0001
+                early_stopping_patience=3, early_stopping_threshold=0.0001
             )
         ],
         optimizers=(optimizer, scheduler),

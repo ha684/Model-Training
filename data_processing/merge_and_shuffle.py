@@ -381,15 +381,37 @@ def main():
     for dtype, indices in type_groups.items():
         logger.info(f"  {dtype}: {len(indices)} samples")
     
-    # Sample test set: 50 from each type
+    # Sample test set: proportional split from each type
     test_indices = []
-    samples_per_type = args.test_size // 3  # 50 samples per type for 150 total
+    train_indices = []
+    samples_per_type = args.test_size // 3  # Target: 50 samples per type for 150 total
     
+    # First pass: collect proportionally from each type
+    collected = {}
     for dtype in ["LT", "KO", "SK"]:
         if dtype in type_groups:
             indices = type_groups[dtype].copy()
             random.shuffle(indices)
-            test_indices.extend(indices[:samples_per_type])
+            
+            # Take 20% for eval (or target samples, whichever is smaller)
+            n_available = len(indices)
+            n_eval = min(samples_per_type, max(1, int(n_available * 0.2)))  # At least 1, max 20%
+            
+            collected[dtype] = indices[:n_eval]
+            test_indices.extend(collected[dtype])
+            logger.info(f"  {dtype}: {n_eval} for eval, {n_available - n_eval} for train (total: {n_available})")
+    
+    # Second pass: if we're short of 150, fill from LT (the largest group)
+    shortage = args.test_size - len(test_indices)
+    if shortage > 0 and "LT" in type_groups:
+        logger.info(f"  Short by {shortage} samples, filling from LT...")
+        # Get LT indices not already in test set
+        used_lt = set(collected.get("LT", []))
+        available_lt = [idx for idx in type_groups["LT"] if idx not in used_lt]
+        random.shuffle(available_lt)
+        additional = available_lt[:shortage]
+        test_indices.extend(additional)
+        logger.info(f"  Added {len(additional)} more from LT for eval")
     
     # Get all remaining indices for train
     train_indices = [i for i in range(len(ds_prod_full)) if i not in test_indices]
