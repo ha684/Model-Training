@@ -243,7 +243,7 @@ def create_custom_optimizer_and_scheduler(model, args, num_training_steps):
 
     LR_LLM = args.learning_rate
     LR_PROJ = args.learning_rate * 1.0
-    LR_VISION = args.learning_rate * 0.1
+    LR_VISION = args.learning_rate * 0.01
 
     count_v, count_p, count_l = 0, 0, 0
 
