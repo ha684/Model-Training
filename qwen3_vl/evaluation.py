@@ -35,7 +35,7 @@ VLLM_API_URL = f"{base_url}/v1/chat/completions"
 MODEL_NAME = "dduy193/senko-vlm8b-v2"
 DATASET_NAME = "ha684/senko-V1.1"
 DATASET_SPLIT = "validation"
-MAX_CONCURRENT_REQUESTS = 4
+MAX_CONCURRENT_REQUESTS = 3
 TIMEOUT = 180
 
 

@@ -48,22 +48,28 @@ FIELD DEFINITIONS AND EXTRACTION RULES:
 
 **METADATA FIELDS (Document-level information):**
 
-1. **"Số phiếu"** (PO Number/Document Number):
-   - This is typically labeled as "Số PGC" or similar at the top of the document
-   - Example format: "471016736" or "470167389"
-   - CRITICAL: Do NOT confuse this with numbers appearing after "Mã AR" field
-   - The number after "Mã AR" (e.g., "141" in "A68/750___141") is a SUFFIX of Mã AR, NOT the Số phiếu
-   - Location: Usually in the top-right area of the document
+1. "Số phiếu" (Document Number/PO Number):
+   - Look for labels such as: "Số PO", "PO/PO No", "S.PO/PO No.", "Số:", "Số PGC", "Number"
+   - Usually located in the top-right area of the document header
+   - Common formats: "PXB25110076", "2544051804257", "252.104.868.0263", "252-104-866-7210"
+   - Extract the number exactly as shown, preserving dots, dashes, and spaces
+   - DO NOT extract handwritten page numbers (e.g., "1/2", "2/2")
+   - DO NOT extract numbers that appear after "Mã AR" field (these are AR code suffixes, not document numbers)
+   - DO NOT extract dates or reference numbers from table rows
+   - If the document number is unclear or not found, set to null
 
-2. **"Ngày chứng từ(mm/dd/yyyy)"** (Document Date):
-   - Convert to mm/dd/yyyy format
-   - If format unclear or not found, set to null
-   - Example: "01/04/2025"
+2. "Ngày chứng từ(dd/mm/yyyy)" (Document Date):
+   - Look for labels: "Ngày/Date:", "Document date:", "Ngày chứng từ:"
+   - Located near the document number in the header
+   - Convert to dd/mm/yyyy format (e.g., "03/11/2025")
+   - If multiple dates exist, choose the one labeled as document date or issue date
+   - If unclear or not found, set to null
 
-3. **"Ngày xuất(mm/dd/yyyy)"** (Export Date):
-   - Convert to mm/dd/yyyy format
-   - May be the same as or different from Ngày chứng từ
-   - If not found, set to null
+3. "Ngày xuất(dd/mm/yyyy)" (Export/Delivery Date):
+   - Look for labels: "Ngày giao hàng", "Delivery date:", "Ngày xuất:", "Ngày xuất kho"
+   - Convert to dd/mm/yyyy format
+   - This may be the same as or different from the document date
+   - If not explicitly shown, set to null
 
 4. **"Kho nhận"** (Receiving Warehouse):
    - The warehouse or customer name receiving the goods
