@@ -404,7 +404,7 @@ def build_trainer(
         # compute_metrics=compute_metrics_fn,
         callbacks=[
             EarlyStoppingCallback(
-                early_stopping_patience=5, early_stopping_threshold=0.00001
+                early_stopping_patience=5, early_stopping_threshold=1e-4
             )
         ],
         optimizers=(optimizer, scheduler),

@@ -230,7 +230,16 @@ def transform_production_with_aug(batch):
 
 
 def transform_local_with_aug(batch):
-    """Apply augmentation to local conversations"""
+    """
+    Apply augmentation randomly to local conversations
+    
+    Args:
+        batch: Input batch
+        aug_prob: Probability of applying augmentation (default 0.5 = 50%)
+    
+    Output: Same batch size as input (N → N), but some images are augmented
+    """
+    aug_prob=0.5
     out_imgs = []
     out_texts = []
     out_sources = []
@@ -245,24 +254,15 @@ def transform_local_with_aug(batch):
         else:
             original_img = img
 
-        # COPY 1: ORIGINAL
-        out_imgs.append(original_img)
-        out_texts.append(txt)
-        out_sources.append(src)
-        out_pages.append(page)
-        out_multiturn.append(True)
-
-        # COPY 2: AUGMENTATION 1
-        aug_img_1 = apply_augment(original_img)
-        out_imgs.append(aug_img_1)
-        out_texts.append(txt)
-        out_sources.append(src)
-        out_pages.append(page)
-        out_multiturn.append(True)
-
-        # COPY 3: AUGMENTATION 2
-        aug_img_2 = apply_augment(original_img)
-        out_imgs.append(aug_img_2)
+        # Random decision: augment or keep original
+        if random.random() < aug_prob:
+            # Apply augmentation
+            final_img = apply_augment(original_img)
+        else:
+            # Keep original
+            final_img = original_img
+        
+        out_imgs.append(final_img)
         out_texts.append(txt)
         out_sources.append(src)
         out_pages.append(page)
