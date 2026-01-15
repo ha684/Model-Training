@@ -312,7 +312,7 @@ def run_pipeline(
 
             try:
                 genai.configure(api_key=current_key)
-                model = genai.GenerativeModel("gemini-3-pro-preview")
+                model = genai.GenerativeModel("gemini-3-flash-preview")
 
                 success = process_file(
                     file_path=file_path,

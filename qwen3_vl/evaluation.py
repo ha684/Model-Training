@@ -32,10 +32,10 @@ load_dotenv()
 HF_TOKEN = os.getenv("hf_token")
 base_url = os.getenv("base_url", "https://a1aacb296bc6.ngrok-free.app")
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "ha684/qwen3-vl-2b-1.2"
-DATASET_NAME = "ha684/senko2"
+MODEL_NAME = "dduy193/senko-vlm8b-v2"
+DATASET_NAME = "ha684/senko-V1.1"
 DATASET_SPLIT = "validation"
-MAX_CONCURRENT_REQUESTS = 3
+MAX_CONCURRENT_REQUESTS = 4
 TIMEOUT = 180
 
 
@@ -133,14 +133,46 @@ def normalize_ar_code(value: str) -> str:
     """
     if value is None:
         return None
-
+    
     normalized = value.strip().lower()
-
+    
     # Split by underscore and take the first part (the AR code)
-    if "_" in normalized:
-        ar_part = normalized.split("_")[0]
+    if '_' in normalized:
+        ar_part = normalized.split('_')[0]
         return ar_part
+    
+    return normalized
 
+
+def normalize_so_phieu(value: str) -> str:
+    """
+    Normalize Số phiếu for comparison by removing all spaces, dots, and dashes.
+    Examples:
+    - "252.104.868.0263" -> "2521048680263"
+    - "252. 104. 868.0263" -> "2521048680263"
+    - "252-104-866-7210" -> "2521048667210"
+    - "25 2-104.866-7210" -> "2521048667210"
+    """
+    if value is None:
+        return None
+    
+    normalized = value.strip().lower()
+    # Remove all spaces, dots, and dashes
+    normalized = normalized.replace(' ', '').replace('.', '').replace('-', '')
+    return normalized
+
+
+def normalize_dia_chi(value: str) -> str:
+    """
+    Normalize Địa chỉ for fuzzy comparison by removing spaces and converting to lowercase.
+    This helps handle minor OCR errors and spacing differences.
+    """
+    if value is None:
+        return None
+    
+    normalized = value.strip().lower()
+    # Remove all spaces for comparison
+    normalized = normalized.replace(' ', '')
     return normalized
 
 
@@ -156,11 +188,17 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
     for field in gt_meta.keys():
         pred_original = pred_meta.get(field)
         gt_original = gt_meta.get(field)
-
-        # Special handling for Mã AR field
+        
+        # Special handling for different fields
         if field == "Mã AR":
             pred_val = normalize_ar_code(pred_original)
             gt_val = normalize_ar_code(gt_original)
+        elif field == "Số phiếu":
+            pred_val = normalize_so_phieu(pred_original)
+            gt_val = normalize_so_phieu(gt_original)
+        elif field == "Địa chỉ":
+            pred_val = normalize_dia_chi(pred_original)
+            gt_val = normalize_dia_chi(gt_original)
         else:
             pred_val = normalize_value(pred_original)
             gt_val = normalize_value(gt_original)
@@ -188,7 +226,7 @@ def compare_table_rows(
     Compare table rows between prediction and ground truth.
     A row is correct if:
     - Mã FG matches exactly (after normalization)
-    - The quantity matches (regardless of whether it's in Thùng or Pcs column)
+    - The quantity matches (compare the larger value if both Thùng and Pcs exist)
     """
     if not gt_rows:
         return 0, 0, []
@@ -203,9 +241,10 @@ def compare_table_rows(
         gt_fg = normalize_value(gt_row.get("Mã FG"))
         gt_qty_thung = normalize_value(gt_row.get("Số lượng(Thùng)"))
         gt_qty_pcs = normalize_value(gt_row.get("Số lượng(Pcs)"))
-
-        # Get the actual quantity value from ground truth (whichever is not None)
-        gt_qty = gt_qty_thung if gt_qty_thung is not None else gt_qty_pcs
+        
+        # Get the larger quantity value from ground truth
+        gt_quantities = [q for q in [gt_qty_thung, gt_qty_pcs] if q is not None]
+        gt_qty = max(gt_quantities) if gt_quantities else None
 
         row_detail = {"gt_fg": gt_fg, "match": False, "errors": []}
 
@@ -217,16 +256,13 @@ def compare_table_rows(
         pred_row = pred_by_fg[gt_fg]
         pred_qty_thung = normalize_value(pred_row.get("Số lượng(Thùng)"))
         pred_qty_pcs = normalize_value(pred_row.get("Số lượng(Pcs)"))
+        
+        # Get the larger quantity value from prediction
+        pred_quantities = [q for q in [pred_qty_thung, pred_qty_pcs] if q is not None]
+        pred_qty = max(pred_quantities) if pred_quantities else None
 
-        # Get the actual quantity value from prediction (whichever is not None)
-        pred_qty = pred_qty_thung if pred_qty_thung is not None else pred_qty_pcs
-
-        # Check if quantities match (regardless of column)
-        qty_match = (
-            (gt_qty == pred_qty)
-            if (gt_qty is not None and pred_qty is not None)
-            else False
-        )
+        # Check if quantities match (comparing the larger values)
+        qty_match = (gt_qty == pred_qty) if (gt_qty is not None and pred_qty is not None) else False
 
         if not qty_match:
             row_detail["errors"].append(
@@ -259,7 +295,7 @@ async def evaluate_single_async(
 
     # Check if ground truth has table_rows
     gt_has_table_rows = bool(gt_data.get("table_rows"))
-
+    
     # Skip evaluation if label doesn't have table_rows
     if not gt_has_table_rows:
         return {
@@ -354,9 +390,7 @@ async def evaluate_dataset_async(dataset, prompt: str):
     total_examples = len(dataset)
     all_results = []
 
-    connector = aiohttp.TCPConnector(
-        limit=MAX_CONCURRENT_REQUESTS, limit_per_host=MAX_CONCURRENT_REQUESTS
-    )
+    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS, limit_per_host=MAX_CONCURRENT_REQUESTS)
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
@@ -370,15 +404,11 @@ async def evaluate_dataset_async(dataset, prompt: str):
                 example = {
                     "image": batch_slice["image"][j],
                     "text": batch_slice["text"][j],
-                    "source_file": batch_slice.get("source_file", [None] * batch_size)[
-                        j
-                    ],
-                    "page_number": batch_slice.get("page_number", [None] * batch_size)[
-                        j
-                    ],
+                    "source_file": batch_slice.get("source_file", [None] * batch_size)[j],
+                    "page_number": batch_slice.get("page_number", [None] * batch_size)[j],
                 }
                 batch.append(example)
-
+            
             batch_results = await process_batch(session, batch, prompt, pbar)
             all_results.extend(batch_results)
 
@@ -392,8 +422,8 @@ def main():
     print(f"Loading dataset: {DATASET_NAME} ({DATASET_SPLIT})")
     dataset = load_dataset(
         "parquet", 
-        data_files={"validation": f"hf://datasets/{DATASET_NAME}/data/validation-*.parquet"},
-        split="validation"
+        data_files={"test": f"hf://datasets/{DATASET_NAME}/data/test-*.parquet"},
+        split="test"
     )
 
     print(f"Dataset loaded: {len(dataset)} examples")
@@ -444,9 +474,7 @@ def main():
     print(f"Skipped examples (no table_rows in GT): {skipped_examples}")
     print(f"Evaluated examples: {evaluated_examples}")
     print(
-        f"Successful parses: {successful_parses}/{evaluated_examples} ({100 * successful_parses / evaluated_examples:.1f}%)"
-        if evaluated_examples > 0
-        else "Successful parses: 0/0"
+        f"Successful parses: {successful_parses}/{evaluated_examples} ({100 * successful_parses / evaluated_examples:.1f}%)" if evaluated_examples > 0 else "Successful parses: 0/0"
     )
 
     print("\n--- METADATA FIELD ACCURACY ---")
@@ -477,23 +505,23 @@ def main():
         if r is not None:
             # Only save results that have errors
             has_error = False
-
+            
             # Check if parsing failed
             if not r.get("success", False) and not r.get("skipped", False):
                 has_error = True
-
+            
             # Check if any metadata field is incorrect
             if r.get("success", False):
                 for field, score_info in r.get("metadata_scores", {}).items():
                     if not score_info["correct"]:
                         has_error = True
                         break
-
+                
                 # Check if any table rows are incorrect
                 if r.get("table_rows_total", 0) > 0:
                     if r.get("table_rows_correct", 0) < r.get("table_rows_total", 0):
                         has_error = True
-
+            
             # Only append if there's an error
             if has_error:
                 simplified_results.append(
