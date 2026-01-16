@@ -14,7 +14,6 @@ Usage:
 """
 
 import argparse
-from functools import partial
 import os
 from typing import Any, Dict, Tuple
 import sys
@@ -32,8 +31,8 @@ from trl import SFTConfig, SFTTrainer
 import shutil
 import torch.distributed as dist
 
-from config.fields_config import get_extraction_prompt
-from qwen3_vl.utils import LazyVisionDataset, compute_metrics_cer
+from config.fields_config_1 import get_extraction_prompt
+from qwen3_vl.utils import LazyVisionDataset
 
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
@@ -404,7 +403,7 @@ def build_trainer(
         # compute_metrics=compute_metrics_fn,
         callbacks=[
             EarlyStoppingCallback(
-                early_stopping_patience=5, early_stopping_threshold=1e-4
+                early_stopping_patience=3, early_stopping_threshold=1e-4
             )
         ],
         optimizers=(optimizer, scheduler),

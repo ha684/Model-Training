@@ -32,7 +32,7 @@ load_dotenv()
 HF_TOKEN = os.getenv("hf_token")
 base_url = os.getenv("base_url", "https://a1aacb296bc6.ngrok-free.app")
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "dduy193/senko-vlm8b-v2"
+MODEL_NAME = "ha684/qwen3-vl-2b-V1.3"
 DATASET_NAME = "ha684/senko-V1.1"
 DATASET_SPLIT = "validation"
 MAX_CONCURRENT_REQUESTS = 3

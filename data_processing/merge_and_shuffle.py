@@ -232,14 +232,14 @@ def transform_production_with_aug(batch):
 def transform_local_with_aug(batch):
     """
     Apply augmentation randomly to local conversations
-    
+
     Args:
         batch: Input batch
         aug_prob: Probability of applying augmentation (default 0.5 = 50%)
-    
+
     Output: Same batch size as input (N → N), but some images are augmented
     """
-    aug_prob=0.5
+    aug_prob = 0.5
     out_imgs = []
     out_texts = []
     out_sources = []
@@ -261,7 +261,7 @@ def transform_local_with_aug(batch):
         else:
             # Keep original
             final_img = original_img
-        
+
         out_imgs.append(final_img)
         out_texts.append(txt)
         out_sources.append(src)
@@ -572,7 +572,7 @@ def main():
     # Calculate target based on: Production + Local = 80%, Others = 20% (10% each)
     # If P + L = 80%, then Total = (P + L) / 0.8
     base_count = n_prod_train + n_local_train
-    target_total = int(base_count / 0.8)
+    target_total = int(base_count / 0.7)
     target_others_total = target_total - base_count
 
     logger.info(f"Base count (Production + Local): {base_count}")

@@ -61,7 +61,6 @@ FIELD DEFINITIONS AND EXTRACTION RULES:
 2. "Ngày chứng từ(dd/mm/yyyy)" (Document Date):
    - Look for labels: "Ngày/Date:", "Document date:", "Ngày chứng từ:"
    - Located near the document number in the header
-   - Convert to dd/mm/yyyy format (e.g., "03/11/2025")
    - If multiple dates exist, choose the one labeled as document date or issue date
    - If unclear or not found, set to null
 
