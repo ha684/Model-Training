@@ -175,7 +175,6 @@ def build_grpo_trainer(
         "save_total_limit": 1,
         "load_best_model_at_end": True,
         "remove_unused_columns": False,
-        "dataset_text_field": "",
         "dataset_kwargs": {"skip_prepare_dataset": True},
         "eval_strategy": "steps",
         "eval_steps": args.eval_steps,
@@ -227,9 +226,9 @@ def build_grpo_trainer(
     trainer = GRPOTrainer(
         model=model,
         reward_funcs=[
-            format_reward_func,           # Priority 1: Must return JSON
-            content_accuracy_reward_func, # Priority 2: Content must match (Exact Match)
-            logic_constraint_reward_func, # Priority 3: Logic constraints
+            format_reward_func,
+            content_accuracy_reward_func,
+            logic_constraint_reward_func,
         ],
         args=training_args,
         train_dataset=train_dataset,
@@ -246,7 +245,6 @@ def main():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     rank = int(os.environ.get("RANK", 0))
 
-    # Setup MLflow tracking
     setup_mlflow(args, local_rank=rank)
 
     if rank == 0:
@@ -263,7 +261,6 @@ def main():
 
     if rank == 0:
         print("🚀 Initializing model and tokenizer...")
-    # For GRPO: use 4-bit quantization + fast inference
     model, tokenizer = init_model(args, local_rank, load_in_4bit=False)
 
     if rank == 0:
@@ -278,10 +275,8 @@ def main():
         print("🎯 Starting GRPO training...")
         print()
 
-    # Enable training mode
     FastVisionModel.for_training(model)
 
-    # Train
     try:
         from unsloth import unsloth_train
 
@@ -295,13 +290,11 @@ def main():
         print("✅ Training completed!")
         print(f"📊 Training stats: {trainer_stats}")
 
-        # Save final metrics
         if args.metric_file:
             final_loss = trainer_stats.training_loss if hasattr(trainer_stats, 'training_loss') else 0.0
             with open(args.metric_file, "w") as f:
                 json.dump({"training_loss": final_loss}, f)
 
-    # Save model
     if args.save_model and rank == 0:
         print(f"\n💾 Saving model to {args.model_save_path}...")
         model.save_pretrained(args.model_save_path)
@@ -324,7 +317,6 @@ def main():
         except Exception as e:
             print(f"⚠️ Failed to push to hub: {e}")
 
-    # Upload to MLflow
     if args.report_to == "mlflow" and rank == 0:
         print("📤 Uploading extra artifacts to MLflow...")
 

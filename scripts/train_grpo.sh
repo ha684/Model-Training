@@ -14,7 +14,7 @@ LORA_DROPOUT=0.0
 
 BATCH_SIZE=1
 GRAD_ACCUM=4
-EPOCHS=1         # Đổi mặc định thành 1 để an toàn, nhưng code Python đã sửa float thì 0.5 cũng ok
+EPOCHS=1
 MAX_STEPS=-1
 LEARNING_RATE=5e-6
 WARMUP_STEPS=5
