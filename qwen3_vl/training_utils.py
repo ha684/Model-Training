@@ -87,7 +87,7 @@ def parse_common_args(parser: argparse.ArgumentParser = None) -> argparse.Argume
         "--grad_accum", type=int, default=4, help="Gradient accumulation steps"
     )
     parser.add_argument(
-        "--epochs", type=int, default=1, help="Number of training epochs"
+        "--epochs", type=float, default=1, help="Number of training epochs"
     )
     parser.add_argument(
         "--max_steps",
