@@ -170,7 +170,7 @@ def parse_common_args(parser: argparse.ArgumentParser = None) -> argparse.Argume
     parser.add_argument(
         "--eval_steps", type=int, default=10, help="Evaluation interval"
     )
-    
+    parser.add_argument("--dataset_cache_dir", type=str, default=None, help="Custom path to cache datasets")
     return parser
 
 

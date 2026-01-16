@@ -1,36 +1,36 @@
-# qwen3_vl/reward_functions.py
 import json
 import re
 
-# --- Helper Functions (Giữ lại logic so sánh của bạn) ---
-def check_exact_match(pred, gt):
-    return 1.0 if str(pred).strip() == str(gt).strip() else 0.0
-
-def check_inclusion(pred, gt):
-    p, g = str(pred), str(gt)
-    if g in p:
-        # Phạt độ dài thừa: càng dài hơn ground truth càng bị trừ điểm
-        len_diff = len(p) - len(g)
-        return max(0.5 - (0.05 * len_diff), 0.0)
-    return 0.0
+def extract_content_from_solution_tag(text):
+    """
+    Trích xuất nội dung giữa thẻ <SOLUTION> và </SOLUTION>.
+    Nếu không tìm thấy thẻ, trả về text gốc (fallback).
+    """
+    pattern = r"<SOLUTION>(.*?)</SOLUTION>"
+    match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return text
 
 def extract_json_from_text(text):
-    """Cố gắng tìm và parse JSON từ output của model"""
+    """
+    Cố gắng parse JSON từ text, hỗ trợ cả markdown block.
+    """
+    text = text.strip()
     try:
-        # Trường hợp model trả về JSON chuẩn ngay từ đầu
         return json.loads(text)
     except:
         pass
     
-    # Trường hợp model bao JSON trong markdown ```json ... ```
-    match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+    # Tìm block ```json ... ```
+    match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1))
         except:
             pass
             
-    # Trường hợp model quên markdown nhưng có { ... }
+    # Tìm cấu trúc { ... }
     match = re.search(r"(\{.*\})", text, re.DOTALL)
     if match:
         try:
@@ -40,124 +40,139 @@ def extract_json_from_text(text):
             
     return None
 
-# --- Main Reward Functions (Đưa vào GRPO Trainer) ---
+def normalize_value(val):
+    """Chuẩn hóa giá trị để so sánh (đưa về string, strip space, lower null)"""
+    if val is None: return None
+    s = str(val).strip()
+    if s.lower() in ["null", "none", "nan", ""]:
+        return None
+    return s
 
-def format_reward_func(completions, **kwargs):
-    """
-    Reward function 1: Kiểm tra xem output có phải JSON hợp lệ không.
-    Thưởng lớn nếu parse thành công để model học cách tuân thủ cú pháp.
-    """
-    rewards = []
-    for completion in completions:
-        data = extract_json_from_text(completion)
-        if data is None:
-            rewards.append(-1.0) # Phạt nặng nếu không ra JSON
-        else:
-            rewards.append(1.0) # Thưởng nếu đúng cú pháp JSON
-    return rewards
+def check_exact_match(pred, gt):
+    p = normalize_value(pred)
+    g = normalize_value(gt)
+    if p == g: return 1.0
+    return 0.0
+
+def check_inclusion(pred, gt):
+    p = normalize_value(pred)
+    g = normalize_value(gt)
+    if p is None or g is None: return 0.0
+    
+    if g in p:
+        # Logic cũ: Phạt nếu string dự đoán quá dài so với đáp án
+        len_diff = len(p) - len(g)
+        return max(0.5 - (0.05 * len_diff), 0.0)
+    return 0.0
+
+# --- 2. Main Reward Function ---
 
 def content_accuracy_reward_func(completions, ground_truth, **kwargs):
     """
-    Reward function 2: So sánh nội dung chi tiết (Metadata & Table)
-    Đây là nơi áp dụng logic Exact Match & Inclusion của bạn.
+    Reward function chấm điểm độ chính xác nội dung JSON.
+    Hỗ trợ format: <REASONING>...</REASONING> <SOLUTION>JSON</SOLUTION>
     """
     rewards = []
-    
-    # ground_truth trong TRL thường là list các string (raw json), cần parse lại
-    # Lưu ý: dataset cần column "ground_truth" chứa json string hoặc dict
     
     for completion, gt_item in zip(completions, ground_truth):
         score = 0.0
         
-        # 1. Parse Data
-        pred_data = extract_json_from_text(completion)
-        
-        # Xử lý GT: nếu nó là string thì load ra, nếu là dict thì dùng luôn
+        # --- BƯỚC 1: Lấy Ground Truth ---
         gt_data = gt_item
         if isinstance(gt_item, str):
             try:
                 gt_data = json.loads(gt_item)
             except:
+                # Nếu GT lỗi thì không thể chấm, trả về 0 (hoặc skip)
                 rewards.append(0.0)
                 continue
 
+        # --- BƯỚC 2: Lấy Prediction ---
+        # Ưu tiên lấy trong thẻ <SOLUTION>, nếu không có thì lấy raw
+        json_text = extract_content_from_solution_tag(completion)
+        pred_data = extract_json_from_text(json_text)
+
         if pred_data is None:
-            rewards.append(-1.0) # Format sai thì khỏi chấm nội dung
+            rewards.append(-1.0) # Phạt nặng nếu không ra được JSON
             continue
 
-        # 2. Chấm điểm METADATA
-        # Lấy danh sách key từ GT để so sánh
+        # --- BƯỚC 3: Chấm METADATA ---
+        # Xử lý linh hoạt: metadata có thể là dict hoặc list chứa 1 dict
         gt_meta = gt_data.get("metadata", {})
         pred_meta = pred_data.get("metadata", {})
-        
+
+        # Chuẩn hóa về Dict: Nếu là list thì lấy phần tử đầu tiên
+        if isinstance(gt_meta, list):
+            gt_meta = gt_meta[0] if len(gt_meta) > 0 else {}
+        if isinstance(pred_meta, list):
+            pred_meta = pred_meta[0] if len(pred_meta) > 0 else {}
+
         if not isinstance(pred_meta, dict):
-            score -= 0.5
+            score -= 1.0 # Sai cấu trúc metadata
         else:
+            # Duyệt qua từng key trong Ground Truth để chấm
             for key, gt_val in gt_meta.items():
                 pred_val = pred_meta.get(key)
                 
-                if gt_val is None: 
-                    # Nếu GT là null, Pred cũng phải null hoặc "null"
-                    if pred_val is None or str(pred_val).lower() == "null":
-                        score += 0.2
+                # Case 1: GT là Null
+                if normalize_value(gt_val) is None:
+                    if normalize_value(pred_val) is None:
+                        score += 0.5 # Đúng là Null
                     else:
-                        score -= 0.1
+                        score -= 0.2 # GT Null mà Pred có giá trị -> Hallucination
                     continue
 
-                if pred_val is None:
-                    score -= 0.2 # Mất dữ liệu
+                # Case 2: Pred bị thiếu key hoặc Null
+                if normalize_value(pred_val) is None:
+                    score -= 0.5 # Bỏ sót thông tin quan trọng
                     continue
                 
-                # Áp dụng logic Exact Match của bạn
-                # Trọng số cao (2.0) vì đây là mục tiêu chính
+                # Case 3: So sánh giá trị
                 match_score = check_exact_match(pred_val, gt_val)
-                score += match_score * 2.0 
-                
-                # Nếu không exact match, thử vớt vát bằng inclusion
-                if match_score == 0:
+                if match_score > 0:
+                    score += 2.0 # Thưởng lớn cho Exact Match
+                else:
+                    # Nếu không exact match, thử Inclusion (vớt vát điểm)
                     score += check_inclusion(pred_val, gt_val)
 
-        # 3. Chấm điểm TABLE ROWS
+        # --- BƯỚC 4: Chấm TABLE ROWS ---
         gt_rows = gt_data.get("table_rows", [])
         pred_rows = pred_data.get("table_rows", [])
         
-        # So sánh số lượng dòng
-        if abs(len(gt_rows) - len(pred_rows)) > 0:
-            score -= 0.5 * abs(len(gt_rows) - len(pred_rows)) # Phạt nếu sai số dòng
-        
-        for p_row, g_row in zip(pred_rows, gt_rows):
-            if not isinstance(p_row, dict): continue
-            
-            for key, gt_val in g_row.items():
-                pred_val = p_row.get(key)
-                if gt_val is None: continue
-                
-                score += check_exact_match(pred_val, gt_val) * 1.5
-        
-        rewards.append(score)
-        
-    return rewards
+        # Đảm bảo là list
+        if not isinstance(gt_rows, list): gt_rows = []
+        if not isinstance(pred_rows, list): pred_rows = []
 
-def logic_constraint_reward_func(completions, **kwargs):
-    """
-    Reward function 3: Logic constraints (Regex date, invoice number...)
-    """
-    rewards = []
-    for completion in completions:
-        score = 0.0
-        data = extract_json_from_text(completion)
+        # Phạt lệch số dòng
+        len_diff = abs(len(gt_rows) - len(pred_rows))
+        if len_diff > 0:
+            score -= 0.5 * len_diff
         
-        if data:
-            meta = data.get("metadata", {})
+        # So sánh từng dòng (theo thứ tự)
+        # Lưu ý: Logic này giả định thứ tự dòng phải khớp. 
+        # Nếu bài toán không quan trọng thứ tự, cần logic so khớp phức tạp hơn.
+        min_len = min(len(gt_rows), len(pred_rows))
+        for i in range(min_len):
+            g_row = gt_rows[i]
+            p_row = pred_rows[i]
             
-            so_phieu = str(meta.get("Số phiếu", ""))
-            if so_phieu and any(c.isalpha() for c in so_phieu):
-                score -= 1.0
-            
-            date_str = str(meta.get("Ngày chứng từ(dd/mm/yyyy)", ""))
-            if date_str and date_str.lower() != "none" and date_str != "null":
-                if not re.match(r"^\d{2}/\d{2}/\d{4}$", date_str):
-                    score -= 0.5
+            if not isinstance(p_row, dict) or not isinstance(g_row, dict):
+                continue
+                
+            for k, g_v in g_row.items():
+                p_v = p_row.get(k)
+                
+                # Logic chấm cell tương tự metadata nhưng trọng số thấp hơn chút
+                if normalize_value(g_v) is None:
+                    continue # Bỏ qua check null trong bảng để đỡ gắt
+                
+                if normalize_value(p_v) is None:
+                    score -= 0.1
+                    continue
                     
+                match_s = check_exact_match(p_v, g_v)
+                score += match_s * 1.5 # Thưởng 1.5 cho mỗi cell đúng
+        
         rewards.append(score)
+        
     return rewards

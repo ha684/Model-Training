@@ -7,6 +7,11 @@ import numpy as np
 from torch.utils.data import Dataset as TorchDataset
 
 
+REASONING_START = "<REASONING>"
+REASONING_END = "</REASONING>"
+SOLUTION_START = "<SOLUTION>"
+SOLUTION_END = "</SOLUTION>"
+
 def convert_to_conversation(sample: Dict, instruction: str) -> Dict:
     try:
         multiturn = sample["is_multiturn"]
@@ -106,7 +111,83 @@ class LazyVisionDataset(TorchDataset):
         sample = self.dataset[idx]
         return convert_to_conversation(sample, self.instruction)
 
+class LazyVisionGRPODataset(TorchDataset):
+    def __init__(self, hf_dataset, instruction: str, processor):
+        """
+        hf_dataset: Dataset gốc từ HuggingFace (chưa map/load ảnh vào RAM)
+        instruction: Câu lệnh mặc định (ví dụ: "Solve this problem.")
+        processor: Processor của Qwen2-VL (để dùng apply_chat_template)
+        """
+        self.dataset = hf_dataset
+        self.instruction = instruction
+        self.processor = processor
 
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        sample = self.dataset[idx]
+        
+        # 1. Xử lý ảnh (Load ảnh tại thời điểm gọi để tiết kiệm RAM)
+        # Giả sử key ảnh trong dataset của bạn là "image"
+        image = sample["image"]
+        
+        # Convert sang RGB nếu cần (tránh lỗi kênh Alpha)
+        if hasattr(image, "mode") and image.mode != "RGB":
+            image = image.convert("RGB")
+            
+        # (Tùy chọn) Resize ảnh nếu quá lớn để tiết kiệm VRAM khi training
+        # if hasattr(image, "resize"):
+        #     image = image.resize((512, 512)) 
+
+        # 2. Xây dựng nội dung Prompt (User Prompt)
+        # Chúng ta chèn yêu cầu Reasoning vào đây
+        # Logic: Câu hỏi gốc + "Hãy suy nghĩ trong thẻ..."
+        
+        # Lấy câu hỏi từ data (giả sử key là 'text' hoặc 'question')
+        question_text = sample.get("text") or sample.get("question", "")
+        
+        # Tạo câu lệnh đầy đủ cho GRPO
+        user_content_text = (
+            f"{self.instruction}\n\nProblem: {question_text}\n\n"
+            f"First provide your reasoning or working out on how you would go about solving the question "
+            f"between {REASONING_START} and {REASONING_END}. "
+            f"Then output your final answer between {SOLUTION_START} and {SOLUTION_END}."
+        )
+
+        # 3. Tạo list messages theo chuẩn Qwen-VL
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image}, # Truyền object ảnh PIL
+                    {"type": "text", "text": user_content_text},
+                ],
+            }
+        ]
+
+        # 4. Dùng Processor để tạo thành chuỗi Prompt text
+        # Lưu ý: add_generation_prompt=True để thêm token của Assistant vào cuối
+        prompt_text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+
+        # 5. Lấy Ground Truth (Đáp án đúng) để tính điểm thưởng (Reward)
+        # Giả sử key đáp án trong data là 'answer' hoặc 'text' (phần assistant cũ)
+        # Bạn cần trích xuất đúng cái "đáp án cuối cùng" để so khớp
+        ground_truth = sample.get("answer") or sample.get("solution") or sample.get("text", "")
+        
+        # Nếu dataset cũ của bạn lưu cả đoạn hội thoại trong 'text', bạn cần parse để lấy đáp án đúng.
+        # Ở đây tôi giả định bạn có cột chứa đáp án thô.
+
+        return {
+            "prompt": prompt_text,   # GRPOTrainer cần key này
+            "image": image,          # Để Collator xử lý pixel_values
+            "completion": ground_truth # Để Reward function so sánh (không train trực tiếp cái này)
+        }
+        
 def compute_metrics_cer(eval_preds, tokenizer):
     """
     Calculate Character Error Rate (CER) for OCR evaluation.

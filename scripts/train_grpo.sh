@@ -47,7 +47,7 @@ SEED=3407
 PUSH_TO_HUB=false
 HUB_MODEL_ID=""
 METRIC_FILE=""
-
+DATASET_CACHE_DIR=""
 # --- 2. PARSE ARGUMENTS ---
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -88,7 +88,7 @@ while [[ $# -gt 0 ]]; do
         --push_to_hub) PUSH_TO_HUB=true; shift ;;
         --hub_model_id) HUB_MODEL_ID="$2"; shift 2 ;;
         --metric_file) METRIC_FILE="$2"; shift 2 ;;
-        
+        --dataset_cache_dir) DATASET_CACHE_DIR="$2"; shift 2 ;;
         # --- ĐÃ THÊM PHẦN XỬ LÝ EVAL ---
         --eval_steps) EVAL_STEPS="$2"; shift 2 ;;
         --eval_batch_size) EVAL_BATCH_SIZE="$2"; shift 2 ;;
@@ -136,7 +136,8 @@ CMD="torchrun --nproc_per_node=$NUM_GPUS qwen3_vl/train_qwen3_vl_grpo.py \
     --mlflow_run_name $MLFLOW_RUN_NAME \
     --seed $SEED \
     --eval_steps $EVAL_STEPS \
-    --eval_batch_size $EVAL_BATCH_SIZE"
+    --eval_batch_size $EVAL_BATCH_SIZE \
+    --dataset_cache_dir $DATASET_CACHE_DIR"
 
 # Add optional flags
 if [ -n "$HF_TOKEN" ]; then CMD="$CMD --hf_token $HF_TOKEN"; fi

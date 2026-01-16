@@ -30,7 +30,7 @@ from datasets import load_dataset
 from trl import GRPOConfig, GRPOTrainer
 
 from config.fields_config_1 import get_extraction_prompt
-from qwen3_vl.utils import LazyVisionDataset
+from qwen3_vl.utils import LazyVisionGRPODataset
 
 from qwen3_vl.training_utils import (
     get_gpu_precision_settings,
@@ -39,6 +39,7 @@ from qwen3_vl.training_utils import (
     setup_mlflow,
 )
 from qwen3_vl.reward_functions import (
+    xml_structure_reward_func,
     format_reward_func,
     content_accuracy_reward_func,
     logic_constraint_reward_func
@@ -108,8 +109,8 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, An
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
-    train_dataset = load_dataset(args.dataset_name, split="train")
-    eval_dataset = load_dataset(args.dataset_name, split="test")
+    train_dataset = load_dataset(args.dataset_name, split="train", cache_dir=args.dataset_cache_dir)
+    eval_dataset = load_dataset(args.dataset_name, split="test", cache_dir=args.dataset_cache_dir)
 
     if local_rank == 0:
         print(f"✅ Found {len(train_dataset)} training samples")
@@ -117,8 +118,8 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, An
 
     instruction = get_extraction_prompt()
 
-    lazy_train = LazyVisionDataset(train_dataset, instruction)
-    lazy_eval = LazyVisionDataset(eval_dataset, instruction)
+    lazy_train = LazyVisionGRPODataset(train_dataset, instruction)
+    lazy_eval = LazyVisionGRPODataset(eval_dataset, instruction)
 
     if local_rank == 0:
         print("✅ Datasets wrapped with lazy loading (images loaded on-demand)")
@@ -220,6 +221,7 @@ def build_grpo_trainer(
     trainer = GRPOTrainer(
         model=model,
         reward_funcs=[
+            xml_structure_reward_func,
             format_reward_func,
             content_accuracy_reward_func,
             logic_constraint_reward_func,

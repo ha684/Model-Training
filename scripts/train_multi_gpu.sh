@@ -33,7 +33,7 @@ SEED=3407
 PUSH_TO_HUB=false
 HUB_MODEL_ID=""
 METRIC_FILE=""
-
+DATASET_CACHE_DIR=""
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -153,6 +153,10 @@ while [[ $# -gt 0 ]]; do
             METRIC_FILE="$2"
             shift 2
             ;;
+        --dataset_cache_dir)
+            DATASET_CACHE_DIR="$2"
+            shift 2
+            ;;
         --help)
             echo "Usage: bash train_multi_gpu.sh [options]"
             echo ""
@@ -187,6 +191,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --mlflow_experiment_name  MLflow experiment name (default: qwen3_vl_finetune)"
             echo "  --mlflow_run_name         MLflow run name (default: qwen3_vl_finetune)"
             echo "  --metric_file             File path to save the final metric"
+            echo "  --dataset_cache_dir       Custom path to cache datasets (default: None)"
             echo ""
             echo "Output & Saving:"
             echo "  --output_dir              Output directory for checkpoints (default: outputs/qwen3_vl_lora)"
@@ -300,7 +305,8 @@ CMD="torchrun --nproc_per_node=$NUM_GPUS qwen3_vl/train_qwen3_vl_ddp.py \
     --mlflow_uri $MLFLOW_URI \
     --mlflow_experiment_name $MLFLOW_EXPERIMENT \
     --mlflow_run_name $MLFLOW_RUN_NAME \
-    --seed $SEED"
+    --seed $SEED \
+    --dataset_cache_dir $DATASET_CACHE_DIR"
 
 # Add optional parameters
 if [ -n "$HF_TOKEN" ]; then
