@@ -196,7 +196,7 @@ def main():
     if rank == 0:
         print("🚀 Initializing model and tokenizer...")
     model, tokenizer = init_model(
-        args, local_rank, load_in_4bit=False, fast_inference=False
+        args, local_rank, load_in_4bit=False
     )
 
     train_dataset, eval_dataset = prepare_datasets(args, local_rank)

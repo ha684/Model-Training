@@ -136,7 +136,7 @@ CMD="torchrun --nproc_per_node=$NUM_GPUS qwen3_vl/train_qwen3_vl_grpo.py \
     --mlflow_run_name $MLFLOW_RUN_NAME \
     --seed $SEED \
     --eval_steps $EVAL_STEPS \
-    --eval_batch_size $EVAL_BATCH_SIZE"  # <--- ĐÃ THÊM VÀO LỆNH GỌI
+    --eval_batch_size $EVAL_BATCH_SIZE"
 
 # Add optional flags
 if [ -n "$HF_TOKEN" ]; then CMD="$CMD --hf_token $HF_TOKEN"; fi

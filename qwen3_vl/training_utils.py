@@ -201,7 +201,6 @@ def init_model(
     args: argparse.Namespace,
     local_rank: int,
     load_in_4bit: bool = False,
-    fast_inference: bool = False,
 ) -> Tuple[Any, Any]:
     """
     Initialize Qwen3-VL model with LoRA adapters
@@ -210,7 +209,6 @@ def init_model(
         args: Parsed arguments containing model settings
         local_rank: Local rank for distributed training
         load_in_4bit: Whether to load model in 4-bit quantization (default: False for SFT, True for GRPO)
-        fast_inference: Enable vLLM fast inference for GRPO (default: False)
     
     Returns:
         Tuple of (model, tokenizer/processor)
@@ -226,17 +224,13 @@ def init_model(
     print(f"   Device map: {device_map}")
     print(f"   4-bit mode: {load_in_4bit}")
 
-    # For GRPO: use 4-bit + fast_inference
-    # For SFT: use 16-bit + gradient checkpointing
     model, tokenizer = FastVisionModel.from_pretrained(
         args.model_name,
         max_seq_length=args.max_seq_length,
         load_in_4bit=load_in_4bit,
-        load_in_16bit=not load_in_4bit,  # 16bit if not 4bit
+        load_in_16bit=not load_in_4bit, 
         use_gradient_checkpointing="unsloth" if not load_in_4bit else None,
-        fast_inference=fast_inference,
         device_map=device_map,
-        gpu_memory_utilization=0.8 if fast_inference else None,
     )
 
     # Sync special tokens for processor

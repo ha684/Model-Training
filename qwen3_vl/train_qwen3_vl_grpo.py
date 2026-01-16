@@ -264,7 +264,7 @@ def main():
     if rank == 0:
         print("🚀 Initializing model and tokenizer...")
     # For GRPO: use 4-bit quantization + fast inference
-    model, tokenizer = init_model(args, local_rank, load_in_4bit=True, fast_inference=False)
+    model, tokenizer = init_model(args, local_rank, load_in_4bit=False)
 
     if rank == 0:
         print("📊 Preparing GRPO dataset...")
