@@ -305,9 +305,11 @@ CMD="torchrun --nproc_per_node=$NUM_GPUS qwen3_vl/train_qwen3_vl_ddp.py \
     --mlflow_uri $MLFLOW_URI \
     --mlflow_experiment_name $MLFLOW_EXPERIMENT \
     --mlflow_run_name $MLFLOW_RUN_NAME \
-    --seed $SEED \
-    --dataset_cache_dir $DATASET_CACHE_DIR"
-
+    --seed $SEED"
+    
+if [ -n "$DATASET_CACHE_DIR" ]; then
+    CMD="$CMD --dataset_cache_dir $DATASET_CACHE_DIR"
+fi
 # Add optional parameters
 if [ -n "$HF_TOKEN" ]; then
     CMD="$CMD --hf_token $HF_TOKEN"

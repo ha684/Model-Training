@@ -136,9 +136,11 @@ CMD="torchrun --nproc_per_node=$NUM_GPUS qwen3_vl/train_qwen3_vl_grpo.py \
     --mlflow_run_name $MLFLOW_RUN_NAME \
     --seed $SEED \
     --eval_steps $EVAL_STEPS \
-    --eval_batch_size $EVAL_BATCH_SIZE \
-    --dataset_cache_dir $DATASET_CACHE_DIR"
-
+    --eval_batch_size $EVAL_BATCH_SIZE"
+    
+if [ -n "$DATASET_CACHE_DIR" ]; then
+    CMD="$CMD --dataset_cache_dir $DATASET_CACHE_DIR"
+fi
 # Add optional flags
 if [ -n "$HF_TOKEN" ]; then CMD="$CMD --hf_token $HF_TOKEN"; fi
 if [ "$SAVE_MODEL" = true ]; then CMD="$CMD --save_model"; fi
