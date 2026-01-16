@@ -185,7 +185,10 @@ def build_grpo_trainer(
         "eval_strategy": "steps",
         "eval_steps": args.eval_steps,
         "save_strategy": "steps",
-        "temperature": 1.0,
+        "generation_kwargs": {
+            "temperature": 1.0,
+        },
+        "truncation_mode": "keep_end",
         **precision_settings,
     }
 
