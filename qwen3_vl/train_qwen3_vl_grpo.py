@@ -148,7 +148,6 @@ def build_grpo_trainer(
 ):
     """Build GRPOTrainer with reward functions"""
     precision_settings = get_gpu_precision_settings()
-    print(f"DEBUG: Max Prompt Length passed to Trainer: {args.max_prompt_length}")
 
     effective_batch = args.batch_size * args.grad_accum * world_size
     if effective_batch % args.num_generations != 0:
@@ -185,9 +184,8 @@ def build_grpo_trainer(
         "eval_strategy": "steps",
         "eval_steps": args.eval_steps,
         "save_strategy": "steps",
-        "generation_kwargs": {
-            "temperature": 1.0,
-        },
+        "temperature": 1.5,
+        "min_p": 0.1,
         **precision_settings,
     }
 
