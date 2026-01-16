@@ -1,8 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-Optimized Merge Script: Modified to include local conversations in eval set
-with augmentation and balanced sampling from all 3 production data types.
-"""
 
 import argparse
 import hashlib
@@ -17,11 +13,6 @@ import albumentations as A
 import numpy as np
 from dotenv import load_dotenv
 
-load_dotenv()
-# Cấu hình để tối ưu I/O trên Windows
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-os.environ["HF_DATASETS_TRUST_REMOTE_CODE"] = "1"
-
 from datasets import (
     Dataset,
     DatasetDict,
@@ -34,19 +25,20 @@ from datasets import Image as HFImage
 from pdf2image import convert_from_path
 from PIL import Image
 
+load_dotenv()
+
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_DATASETS_TRUST_REMOTE_CODE"] = "1"
+os.environ["HF_TOKEN"] = os.getenv("hf_token")
+
 Image.MAX_IMAGE_PIXELS = None
 
-os.environ["HF_TOKEN"] = os.getenv("hf_token")
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# ==========================================
-# DEFINITIONS (GLOBAL SCHEMA)
-# ==========================================
 GLOBAL_FEATURES = Features(
     {
         "image": HFImage(),
@@ -57,12 +49,8 @@ GLOBAL_FEATURES = Features(
     }
 )
 
-# ==========================================
-# CÁC HÀM XỬ LÝ ẢNH LOCAL
-# ==========================================
 doc_aug_pipeline = A.Compose(
     [
-        # 1. Giả lập chất lượng ảnh kém (Noise, Blur, Compression)
         A.OneOf(
             [
                 A.GaussNoise(std_range=(0.04, 0.20), mean_range=(0.0, 0.0), p=0.5),
@@ -71,13 +59,10 @@ doc_aug_pipeline = A.Compose(
             ],
             p=0.5,
         ),
-        # 2. Giả lập ánh sáng/màu mực (Sáng tối, Tương phản)
         A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-        # 3. Giả lập scan lệch (chỉ xoay rất nhẹ +/- 5 độ, fill viền bằng màu trắng 255)
         A.SafeRotate(limit=5, border_mode=0, fill=255, p=0.3),
     ]
 )
-
 
 def apply_augment(pil_img):
     """Hàm helper để áp dụng albumentations lên PIL Image"""
@@ -239,7 +224,6 @@ def transform_local_with_aug(batch):
 
     Output: Same batch size as input (N → N), but some images are augmented
     """
-    aug_prob = 0.5
     out_imgs = []
     out_texts = []
     out_sources = []
@@ -254,13 +238,7 @@ def transform_local_with_aug(batch):
         else:
             original_img = img
 
-        # Random decision: augment or keep original
-        if random.random() < aug_prob:
-            # Apply augmentation
-            final_img = apply_augment(original_img)
-        else:
-            # Keep original
-            final_img = original_img
+        final_img = apply_augment(original_img)
 
         out_imgs.append(final_img)
         out_texts.append(txt)
