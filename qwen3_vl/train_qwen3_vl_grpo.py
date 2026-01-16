@@ -27,6 +27,7 @@ from unsloth import FastVisionModel
 import mlflow
 import torch.distributed as dist
 from datasets import load_dataset
+from transformers import AutoProcessor
 from trl import GRPOConfig, GRPOTrainer
 
 from config.fields_config_1 import get_extraction_prompt
@@ -117,9 +118,9 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, An
         print(f"✅ Found {len(eval_dataset)} validation samples")
 
     instruction = get_extraction_prompt()
-
-    lazy_train = LazyVisionGRPODataset(train_dataset, instruction)
-    lazy_eval = LazyVisionGRPODataset(eval_dataset, instruction)
+    processor = AutoProcessor.from_pretrained(args.model_name)
+    lazy_train = LazyVisionGRPODataset(train_dataset, instruction,processor)
+    lazy_eval = LazyVisionGRPODataset(eval_dataset, instruction,processor)
 
     if local_rank == 0:
         print("✅ Datasets wrapped with lazy loading (images loaded on-demand)")
