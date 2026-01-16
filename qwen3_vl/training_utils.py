@@ -161,7 +161,16 @@ def parse_common_args(parser: argparse.ArgumentParser = None) -> argparse.Argume
     parser.add_argument(
         "--metric_file", type=str, default=None, help="File path to save the final metric"
     )
-
+    parser.add_argument(
+        "--eval_batch_size",
+        type=int,
+        default=2,
+        help="Per device eval batch size",
+    )
+    parser.add_argument(
+        "--eval_steps", type=int, default=10, help="Evaluation interval"
+    )
+    
     return parser
 
 

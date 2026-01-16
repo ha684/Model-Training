@@ -52,17 +52,6 @@ def parse_args():
     )
 
     parser = parse_common_args(parser)
-
-    parser.add_argument(
-        "--eval_batch_size",
-        type=int,
-        default=2,
-        help="Per device eval batch size",
-    )
-    parser.add_argument(
-        "--eval_steps", type=int, default=10, help="Evaluation interval"
-    )
-
     return parser.parse_args()
 
 
