@@ -174,7 +174,6 @@ def build_grpo_trainer(
         "eval_strategy": "steps",
         "eval_steps": args.eval_steps,
         "save_strategy": "steps",
-        "max_length": args.max_seq_length,
         **precision_settings,
     }
 
