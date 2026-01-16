@@ -176,6 +176,7 @@ def build_grpo_trainer(
         "eval_strategy": "steps",
         "eval_steps": args.eval_steps,
         "save_strategy": "steps",
+        "temperature": 1.0,
         **precision_settings,
     }
 
@@ -274,13 +275,7 @@ def main():
 
     FastVisionModel.for_training(model)
 
-    try:
-        from unsloth import unsloth_train
-
-        trainer_stats = unsloth_train(trainer)
-    except ImportError:
-        print("⚠️  unsloth_train not available. Using trl's trainer.")
-        trainer_stats = trainer.train()
+    trainer_stats = trainer.train()
 
     if rank == 0:
         print()

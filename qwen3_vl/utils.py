@@ -178,14 +178,12 @@ class LazyVisionGRPODataset(TorchDataset):
         # Giả sử key đáp án trong data là 'answer' hoặc 'text' (phần assistant cũ)
         # Bạn cần trích xuất đúng cái "đáp án cuối cùng" để so khớp
         ground_truth = sample.get("answer") or sample.get("solution") or sample.get("text", "")
-        
-        # Nếu dataset cũ của bạn lưu cả đoạn hội thoại trong 'text', bạn cần parse để lấy đáp án đúng.
-        # Ở đây tôi giả định bạn có cột chứa đáp án thô.
+
 
         return {
-            "prompt": prompt_text,   # GRPOTrainer cần key này
-            "image": image,          # Để Collator xử lý pixel_values
-            "ground_truth": ground_truth # Để Reward function so sánh (không train trực tiếp cái này)
+            "prompt": prompt_text,
+            "image": image, 
+            "ground_truth": ground_truth
         }
         
 def compute_metrics_cer(eval_preds, tokenizer):
