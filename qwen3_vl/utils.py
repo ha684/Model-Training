@@ -185,7 +185,7 @@ class LazyVisionGRPODataset(TorchDataset):
         return {
             "prompt": prompt_text,   # GRPOTrainer cần key này
             "image": image,          # Để Collator xử lý pixel_values
-            "completion": ground_truth # Để Reward function so sánh (không train trực tiếp cái này)
+            "ground_truth": ground_truth # Để Reward function so sánh (không train trực tiếp cái này)
         }
         
 def compute_metrics_cer(eval_preds, tokenizer):
