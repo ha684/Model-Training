@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from unsloth import FastVisionModel
 import mlflow
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
 from datasets import load_dataset
 from transformers import AutoProcessor
 from trl import GRPOConfig, GRPOTrainer
@@ -45,6 +46,8 @@ from qwen3_vl.reward_functions import (
     content_accuracy_reward_func,
     logic_constraint_reward_func
 )
+
+DistributedDataParallel.config = property(lambda self: self.module.config)
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
 
@@ -267,13 +270,13 @@ def main():
 
     if rank == 0:
         print("🔨 Building GRPO trainer...")
+        
+    FastVisionModel.for_training(model)
     trainer = build_grpo_trainer(model, tokenizer, train_dataset, eval_dataset, args, world_size, local_rank=rank)
 
     if rank == 0:
         print("🎯 Starting GRPO training...")
         print()
-
-    FastVisionModel.for_training(model)
 
     trainer_stats = trainer.train()
 
