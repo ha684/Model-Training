@@ -26,7 +26,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from unsloth import FastVisionModel
 import mlflow
 import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel
 from datasets import load_dataset
 from transformers import AutoProcessor
 from trl import GRPOConfig, GRPOTrainer
@@ -46,12 +45,19 @@ from qwen3_vl.reward_functions import (
     content_accuracy_reward_func,
     logic_constraint_reward_func
 )
+from transformers import TrainerCallback
 
-DistributedDataParallel.config = property(lambda self: self.module.config)
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
 
-
+class DDPConfigFixCallback(TrainerCallback):
+    def on_train_begin(self, args, state, control, **kwargs):
+        m = kwargs.get("model", None)
+        if m is not None and hasattr(m, "module") and (not hasattr(m, "config")) and hasattr(m.module, "config"):
+            # expose config on the DDP wrapper
+            m.config = m.module.config
+        return control
+    
 def parse_args():
     """Parse command line arguments for GRPO training"""
     parser = argparse.ArgumentParser(
@@ -114,7 +120,7 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, An
         os.environ["HF_TOKEN"] = args.hf_token
 
     train_dataset = load_dataset(args.dataset_name, split="train", cache_dir=args.dataset_cache_dir)
-    eval_dataset = load_dataset(args.dataset_name, split="test", cache_dir=args.dataset_cache_dir)
+    eval_dataset = load_dataset(args.dataset_name, split="validation", cache_dir=args.dataset_cache_dir)
 
     if local_rank == 0:
         print(f"✅ Found {len(train_dataset)} training samples")
@@ -236,7 +242,8 @@ def build_grpo_trainer(
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
     )
-
+    trainer.add_callback(DDPConfigFixCallback())
+    
     return trainer
 
 
