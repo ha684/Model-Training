@@ -23,13 +23,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import shutil
 
+from unsloth import FastVisionModel
+from unsloth.trainer import UnslothVisionDataCollator
 import mlflow
 import torch.distributed as dist
 from datasets import load_dataset
 from transformers import EarlyStoppingCallback
 from trl import SFTConfig, SFTTrainer
-from unsloth import FastVisionModel
-from unsloth.trainer import UnslothVisionDataCollator
 
 from config.fields_config_1 import get_extraction_prompt
 from qwen3_vl.training_utils import (

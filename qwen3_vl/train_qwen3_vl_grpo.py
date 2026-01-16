@@ -22,12 +22,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from unsloth import FastVisionModel
 import mlflow
-import torch
 import torch.distributed as dist
 from datasets import load_dataset
 from trl import GRPOConfig, GRPOTrainer
-from unsloth import FastVisionModel
 
 from qwen3_vl.reward_functions import (
     REASONING_END,
