@@ -135,21 +135,17 @@ def build_grpo_trainer(
     world_size: int,
     local_rank: int = 0,
 ):
-    """
-    Build GRPOTrainer with reward functions
-    
-    Args:
-        model: The model to train
-        tokenizer: Model tokenizer/processor
-        train_dataset: Prepared dataset
-        args: Parsed arguments
-        world_size: Number of GPUs
-        local_rank: Local rank for distributed training
-    
-    Returns:
-        GRPOTrainer instance
-    """
+    """Build GRPOTrainer with reward functions"""
     precision_settings = get_gpu_precision_settings()
+
+
+    effective_batch = args.batch_size * args.grad_accum * world_size
+    if effective_batch % args.num_generations != 0:
+        min_grad_accum = max(1, (args.num_generations + effective_batch - 1) // (args.batch_size * world_size))
+        if local_rank == 0:
+            print(f"⚠️  Adjusting gradient_accumulation_steps from {args.grad_accum} to {min_grad_accum}")
+            print(f"   (effective_batch must be divisible by num_generations={args.num_generations})")
+        args.grad_accum = min_grad_accum
 
     training_config = {
         "learning_rate": args.learning_rate,
@@ -175,7 +171,6 @@ def build_grpo_trainer(
         "save_total_limit": 1,
         "load_best_model_at_end": True,
         "remove_unused_columns": False,
-        "dataset_kwargs": {"skip_prepare_dataset": True},
         "eval_strategy": "steps",
         "eval_steps": args.eval_steps,
         "save_strategy": "steps",
