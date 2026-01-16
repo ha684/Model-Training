@@ -24,6 +24,7 @@ from datasets import (
 from datasets import Image as HFImage
 from pdf2image import convert_from_path
 from PIL import Image
+import cv2
 
 load_dotenv()
 
@@ -51,16 +52,51 @@ GLOBAL_FEATURES = Features(
 
 doc_aug_pipeline = A.Compose(
     [
+        A.ShiftScaleRotate(
+            shift_limit=0.02,
+            scale_limit=0.02,
+            rotate_limit=2,
+            border_mode=cv2.BORDER_REPLICATE, 
+            p=0.5
+        ),
+
         A.OneOf(
             [
-                A.GaussNoise(std_range=(0.04, 0.20), mean_range=(0.0, 0.0), p=0.5),
-                A.GaussianBlur(blur_limit=(3, 5), p=0.5),
-                A.ImageCompression(quality_range=(50, 85), p=0.5),
+                A.GaussNoise(std_range=(0.02, 0.10), mean_range=(0.0, 0.0), p=1.0),
+                A.MotionBlur(blur_limit=5, p=1.0),
+                A.GaussianBlur(blur_limit=(3, 5), p=1.0),
+            ],
+            p=0.6,
+        ),
+
+        A.OneOf(
+            [
+                A.ImageCompression(quality_range=(30, 85), p=1.0),
+                A.Downscale(
+                    scale_range=(0.5, 0.9), 
+                    interpolation_pair={"downscale": cv2.INTER_NEAREST, "upscale": cv2.INTER_LINEAR}, 
+                    p=1.0
+                ),
+            ],
+            p=0.8,
+        ),
+
+        A.OneOf(
+            [
+                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0),
+                A.RandomGamma(gamma_limit=(80, 120), p=1.0),
+                A.ToGray(p=1.0), 
             ],
             p=0.5,
         ),
-        A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
-        A.SafeRotate(limit=5, border_mode=0, fill=255, p=0.3),
+        
+        A.OneOf(
+            [
+                A.Morphological(scale=(2, 3), operation='dilation', p=1.0),
+                A.Morphological(scale=(2, 3), operation='erosion', p=1.0),
+            ],
+            p=0.3
+        ),
     ]
 )
 

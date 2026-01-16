@@ -12,7 +12,6 @@ def convert_to_conversation(sample: Dict, instruction: str) -> Dict:
         multiturn = sample["is_multiturn"]
         image = sample["image"]
 
-        # 1. Xử lý Production Data (Single turn)
         if not multiturn:
             conversation = [
                 {
@@ -110,29 +109,22 @@ class LazyVisionDataset(TorchDataset):
 
 def compute_metrics_cer(eval_preds, tokenizer):
     """
-    Tính toán Character Error Rate (CER) cho việc đánh giá OCR.
-    Lưu ý: Đây là Teacher-Forced CER (tính trên next-token prediction),
-    giúp đánh giá nhanh mà không cần chạy generation (rất chậm).
+    Calculate Character Error Rate (CER) for OCR evaluation.
+    Note: This is Teacher-Forced CER (based on next-token prediction),
+    which helps evaluate quickly without running generation (very slow).
     """
     preds, labels = eval_preds
 
-    # Preds thường là logits, cần lấy argmax để ra token id
     if isinstance(preds, tuple):
         preds = preds[0]
 
-    # Lấy token có xác suất cao nhất
     pred_ids = np.argmax(preds, axis=-1)
 
-    # Thay thế -100 trong labels bằng pad_token_id để tokenizer không lỗi
     labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
 
-    # Decode batch thành list string
-    # skip_special_tokens=True để bỏ qua <|endoftext|>, padding, v.v.
     decoded_preds = tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
     decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
-    # Tính CER
     cer = jiwer.cer(decoded_labels, decoded_preds)
 
-    # Trả về dict metrics (tên phải khớp để config nhận diện)
     return {"cer": cer}

@@ -1,100 +1,163 @@
 # qwen3_vl/reward_functions.py
-"""
-Reward functions for GRPO/GSPO reinforcement learning training
-Used to score model completions based on formatting and correctness
-"""
-
+import json
 import re
-from typing import List
 
+# --- Helper Functions (Giữ lại logic so sánh của bạn) ---
+def check_exact_match(pred, gt):
+    return 1.0 if str(pred).strip() == str(gt).strip() else 0.0
 
-# Define the delimiter variables for clarity and easy modification
-REASONING_START = "<REASONING>"
-REASONING_END = "</REASONING>"
-SOLUTION_START = "<SOLUTION>"
-SOLUTION_END = "</SOLUTION>"
+def check_inclusion(pred, gt):
+    p, g = str(pred), str(gt)
+    if g in p:
+        # Phạt độ dài thừa: càng dài hơn ground truth càng bị trừ điểm
+        len_diff = len(p) - len(g)
+        return max(0.5 - (0.05 * len_diff), 0.0)
+    return 0.0
 
+def extract_json_from_text(text):
+    """Cố gắng tìm và parse JSON từ output của model"""
+    try:
+        # Trường hợp model trả về JSON chuẩn ngay từ đầu
+        return json.loads(text)
+    except:
+        pass
+    
+    # Trường hợp model bao JSON trong markdown ```json ... ```
+    match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except:
+            pass
+            
+    # Trường hợp model quên markdown nhưng có { ... }
+    match = re.search(r"(\{.*\})", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except:
+            pass
+            
+    return None
 
-def formatting_reward_func(completions: List[str], **kwargs) -> List[float]:
+# --- Main Reward Functions (Đưa vào GRPO Trainer) ---
+
+def format_reward_func(completions, **kwargs):
     """
-    Reward function for checking proper formatting of model outputs
-    
-    Checks for:
-    - Exactly one reasoning section (<REASONING>...</REASONING>)
-    - Exactly one solution section (<SOLUTION>...</SOLUTION>)
-    - Penalizes excessive "addCriterion" tokens and newlines (Qwen2.5-VL quirk)
-    
-    Args:
-        completions: List of model-generated text completions
-        **kwargs: Additional arguments (unused)
-    
-    Returns:
-        List of scores, one per completion (range: -2.0 to +2.0)
+    Reward function 1: Kiểm tra xem output có phải JSON hợp lệ không.
+    Thưởng lớn nếu parse thành công để model học cách tuân thủ cú pháp.
     """
-    thinking_pattern = f"{REASONING_START}(.*?){REASONING_END}"
-    answer_pattern = f"{SOLUTION_START}(.*?){SOLUTION_END}"
+    rewards = []
+    for completion in completions:
+        data = extract_json_from_text(completion)
+        if data is None:
+            rewards.append(-1.0) # Phạt nặng nếu không ra JSON
+        else:
+            rewards.append(1.0) # Thưởng nếu đúng cú pháp JSON
+    return rewards
 
-    scores = []
+def content_accuracy_reward_func(completions, ground_truth, **kwargs):
+    """
+    Reward function 2: So sánh nội dung chi tiết (Metadata & Table)
+    Đây là nơi áp dụng logic Exact Match & Inclusion của bạn.
+    """
+    rewards = []
+    
+    # ground_truth trong TRL thường là list các string (raw json), cần parse lại
+    # Lưu ý: dataset cần column "ground_truth" chứa json string hoặc dict
+    
+    for completion, gt_item in zip(completions, ground_truth):
+        score = 0.0
+        
+        # 1. Parse Data
+        pred_data = extract_json_from_text(completion)
+        
+        # Xử lý GT: nếu nó là string thì load ra, nếu là dict thì dùng luôn
+        gt_data = gt_item
+        if isinstance(gt_item, str):
+            try:
+                gt_data = json.loads(gt_item)
+            except:
+                rewards.append(0.0)
+                continue
+
+        if pred_data is None:
+            rewards.append(-1.0) # Format sai thì khỏi chấm nội dung
+            continue
+
+        # 2. Chấm điểm METADATA
+        # Lấy danh sách key từ GT để so sánh
+        gt_meta = gt_data.get("metadata", {})
+        pred_meta = pred_data.get("metadata", {})
+        
+        if not isinstance(pred_meta, dict):
+            score -= 0.5
+        else:
+            for key, gt_val in gt_meta.items():
+                pred_val = pred_meta.get(key)
+                
+                if gt_val is None: 
+                    # Nếu GT là null, Pred cũng phải null hoặc "null"
+                    if pred_val is None or str(pred_val).lower() == "null":
+                        score += 0.2
+                    else:
+                        score -= 0.1
+                    continue
+
+                if pred_val is None:
+                    score -= 0.2 # Mất dữ liệu
+                    continue
+                
+                # Áp dụng logic Exact Match của bạn
+                # Trọng số cao (2.0) vì đây là mục tiêu chính
+                match_score = check_exact_match(pred_val, gt_val)
+                score += match_score * 2.0 
+                
+                # Nếu không exact match, thử vớt vát bằng inclusion
+                if match_score == 0:
+                    score += check_inclusion(pred_val, gt_val)
+
+        # 3. Chấm điểm TABLE ROWS
+        gt_rows = gt_data.get("table_rows", [])
+        pred_rows = pred_data.get("table_rows", [])
+        
+        # So sánh số lượng dòng
+        if abs(len(gt_rows) - len(pred_rows)) > 0:
+            score -= 0.5 * abs(len(gt_rows) - len(pred_rows)) # Phạt nếu sai số dòng
+        
+        for p_row, g_row in zip(pred_rows, gt_rows):
+            if not isinstance(p_row, dict): continue
+            
+            for key, gt_val in g_row.items():
+                pred_val = p_row.get(key)
+                if gt_val is None: continue
+                
+                score += check_exact_match(pred_val, gt_val) * 1.5
+        
+        rewards.append(score)
+        
+    return rewards
+
+def logic_constraint_reward_func(completions, **kwargs):
+    """
+    Reward function 3: Logic constraints (Regex date, invoice number...)
+    """
+    rewards = []
     for completion in completions:
         score = 0.0
-
-        # Check reasoning section (must have exactly 1)
-        thinking_matches = re.findall(thinking_pattern, completion, re.DOTALL)
-        if len(thinking_matches) == 1:
-            score += 1.0
-
-        # Check solution section (must have exactly 1)
-        answer_matches = re.findall(answer_pattern, completion, re.DOTALL)
-        if len(answer_matches) == 1:
-            score += 1.0
-
-        # Fix up addCriterion issues
-        # See https://docs.unsloth.ai/new/vision-reinforcement-learning-vlm-rl#qwen-2.5-vl-vision-rl-issues-and-quirks
-        # Penalize excessive addCriterion and newlines
-        if len(completion) != 0:
-            removal = completion.replace("addCriterion", "").replace("\n", "")
-            if (len(completion) - len(removal)) / len(completion) >= 0.5:
-                score -= 2.0
-
-        scores.append(score)
-
-    return scores
-
-
-def correctness_reward_func(
-    prompts: List[str],
-    completions: List[str],
-    answer: List[str],
-    **kwargs,
-) -> List[float]:
-    """
-    Reward function for checking correctness of predicted answers
-    
-    Extracts the answer from <SOLUTION>...</SOLUTION> tags and compares
-    with ground truth. Prints first example for debugging.
-    
-    Args:
-        prompts: List of input prompts (for debugging)
-        completions: List of model-generated text completions
-        answer: List of ground truth answers
-        **kwargs: Additional arguments (unused)
-    
-    Returns:
-        List of scores: 2.0 for correct, 0.0 for incorrect
-    """
-    answer_pattern = f"{SOLUTION_START}(.*?){SOLUTION_END}"
-
-    # Extract answers from completions
-    responses = [
-        re.findall(answer_pattern, completion, re.DOTALL) for completion in completions
-    ]
-
-    # Print first example for debugging
-    q = prompts[0]
-    print("-" * 20, f"Question:\n{q}", f"\nAnswer:\n{answer[0]}", f"\nResponse:{completions[0]}")
-
-    # Score: 2.0 if exactly one answer extracted and matches ground truth
-    return [
-        2.0 if len(r) == 1 and a == r[0].replace("\n", "") else 0.0
-        for r, a in zip(responses, answer)
-    ]
+        data = extract_json_from_text(completion)
+        
+        if data:
+            meta = data.get("metadata", {})
+            
+            so_phieu = str(meta.get("Số phiếu", ""))
+            if so_phieu and any(c.isalpha() for c in so_phieu):
+                score -= 1.0
+            
+            date_str = str(meta.get("Ngày chứng từ(dd/mm/yyyy)", ""))
+            if date_str and date_str.lower() != "none" and date_str != "null":
+                if not re.match(r"^\d{2}/\d{2}/\d{4}$", date_str):
+                    score -= 0.5
+                    
+        rewards.append(score)
+    return rewards

@@ -51,10 +51,8 @@ def parse_args():
         description="Fine-tune Qwen3-VL with multi-GPU support using SFT"
     )
 
-    # Add common arguments (shared with GRPO)
     parser = parse_common_args(parser)
 
-    # SFT-specific arguments
     parser.add_argument(
         "--eval_batch_size",
         type=int,
@@ -192,8 +190,6 @@ def main():
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     rank = int(os.environ.get("RANK", 0))
-
-    # Setup MLflow tracking
     setup_mlflow(args, local_rank=rank)
 
     if rank == 0:
@@ -210,7 +206,6 @@ def main():
 
     if rank == 0:
         print("🚀 Initializing model and tokenizer...")
-    # For SFT: use 16-bit, no 4-bit quantization
     model, tokenizer = init_model(
         args, local_rank, load_in_4bit=False, fast_inference=False
     )

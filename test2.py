@@ -11,53 +11,59 @@ import numpy as np
 from pdf2image import convert_from_path
 
 
-def build_pro_doc_aug_pipeline(seed: int | None = None) -> A.Compose:
+def build_optimized_ocr_pipeline(seed: int | None = None) -> A.Compose:
     if seed is not None:
         np.random.seed(seed)
 
-    pipeline = A.Compose(
+    return A.Compose(
         [
+            A.ShiftScaleRotate(
+                shift_limit=0.02,
+                scale_limit=0.02,
+                rotate_limit=2,
+                border_mode=cv2.BORDER_REPLICATE, 
+                p=0.5
+            ),
+
             A.OneOf(
                 [
-                    A.GaussNoise(std_range=(0.03, 0.12), mean_range=(0.0, 0.0), p=1.0),
-                    A.GaussianBlur(blur_limit=(3, 5), p=1.0),
+                    A.GaussNoise(std_range=(0.02, 0.10), mean_range=(0.0, 0.0), p=1.0),
                     A.MotionBlur(blur_limit=5, p=1.0),
+                    A.GaussianBlur(blur_limit=(3, 5), p=1.0),
                 ],
-                p=0.35,
+                p=0.6,
             ),
+
             A.OneOf(
                 [
-                    A.ImageCompression(quality_range=(35, 85), p=1.0),
-                    A.Downscale(scale_range=(0.55, 0.9), interpolation_pair={"downscale": cv2.INTER_AREA, "upscale": cv2.INTER_LINEAR}, p=1.0),
+                    A.ImageCompression(quality_range=(30, 85), p=1.0),
+                    A.Downscale(
+                        scale_range=(0.5, 0.9), 
+                        interpolation_pair={"downscale": cv2.INTER_NEAREST, "upscale": cv2.INTER_LINEAR}, 
+                        p=1.0
+                    ),
                 ],
-                p=0.35,
+                p=0.8,
             ),
+
             A.OneOf(
                 [
-                    A.RandomBrightnessContrast(brightness_limit=0.18, contrast_limit=0.22, p=1.0),
-                    A.RandomGamma(gamma_limit=(75, 125), p=1.0),
-                    A.CLAHE(clip_limit=(1.5, 2.5), tile_grid_size=(8, 8), p=1.0),
+                    A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=1.0),
+                    A.RandomGamma(gamma_limit=(80, 120), p=1.0),
+                    A.ToGray(p=1.0), 
                 ],
-                p=0.50,
+                p=0.5,
             ),
+            
             A.OneOf(
                 [
-                    A.SafeRotate(limit=5, border_mode=cv2.BORDER_CONSTANT, fill=255, p=1.0),
-                    A.Perspective(scale=(0.02, 0.05), keep_size=True, pad_mode=cv2.BORDER_CONSTANT, pad_val=255, p=1.0),
+                    A.Morphological(scale=(2, 3), operation='dilation', p=1.0),
+                    A.Morphological(scale=(2, 3), operation='erosion', p=1.0),
                 ],
-                p=0.40,
-            ),
-            A.OneOf(
-                [
-                    A.RandomShadow(shadow_roi=(0, 0, 1, 1), num_shadows_lower=1, num_shadows_upper=2, shadow_dimension=5, p=1.0),
-                    A.RandomToneCurve(scale=0.15, p=1.0),
-                ],
-                p=0.30,
+                p=0.3
             ),
         ]
     )
-    return pipeline
-
 
 def pil_to_bgr_uint8(pil_img) -> np.ndarray:
     rgb = np.array(pil_img.convert("RGB"), dtype=np.uint8)
@@ -85,7 +91,7 @@ def main():
     out_orig = out_dir / "orig"
     out_aug = out_dir / "aug"
 
-    pipeline = build_pro_doc_aug_pipeline(seed=args.seed)
+    pipeline = build_optimized_ocr_pipeline(seed=args.seed)
 
     pages = convert_from_path(str(pdf_path), dpi=args.dpi)
     if args.max_pages and args.max_pages > 0:

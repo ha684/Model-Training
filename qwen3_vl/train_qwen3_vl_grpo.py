@@ -19,6 +19,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from typing import Any, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -28,21 +29,20 @@ import torch.distributed as dist
 from datasets import load_dataset
 from trl import GRPOConfig, GRPOTrainer
 
-from qwen3_vl.reward_functions import (
-    REASONING_END,
-    REASONING_START,
-    SOLUTION_END,
-    SOLUTION_START,
-    correctness_reward_func,
-    formatting_reward_func,
-)
+from config.fields_config_1 import get_extraction_prompt
+from qwen3_vl.utils import LazyVisionDataset
+
 from qwen3_vl.training_utils import (
     get_gpu_precision_settings,
     init_model,
     parse_common_args,
     setup_mlflow,
 )
-
+from qwen3_vl.reward_functions import (
+    format_reward_func,
+    content_accuracy_reward_func,
+    logic_constraint_reward_func
+)
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
 
@@ -53,10 +53,8 @@ def parse_args():
         description="Fine-tune Qwen3-VL with GRPO reinforcement learning"
     )
 
-    # Add common arguments (shared with SFT)
     parser = parse_common_args(parser)
 
-    # GRPO-specific arguments
     parser.add_argument(
         "--num_generations",
         type=int,
@@ -101,131 +99,38 @@ def parse_args():
         help="Enable GSPO (Generalized Sequential Policy Optimization)",
     )
 
-    # Override defaults for GRPO
-    parser.set_defaults(
-        learning_rate=5e-6,
-        batch_size=1,
-        grad_accum=1,
-        epochs=0.5,
-        output_dir="outputs/qwen3_vl_grpo",
-        mlflow_experiment_name="qwen3_vl_grpo",
-        mlflow_run_name="qwen3_vl_grpo",
-    )
-
     return parser.parse_args()
 
-
-def prepare_grpo_dataset(args: argparse.Namespace, tokenizer, local_rank: int):
-    """
-    Prepare dataset for GRPO training
-    
-    Uses MathVista testmini split (filtered for numeric answers)
-    Formats prompts to include reasoning + solution delimiters
-    
-    Args:
-        args: Parsed arguments
-        tokenizer: Model tokenizer/processor
-        local_rank: Local rank for distributed training
-    
-    Returns:
-        Prepared dataset ready for GRPOTrainer
-    """
+def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
     if local_rank == 0:
         print(f"📊 Loading dataset: {args.dataset_name}")
 
-    # Load dataset
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
-    dataset = load_dataset(args.dataset_name, split="train")
+    train_dataset = load_dataset(args.dataset_name, split="train")
+    eval_dataset = load_dataset(args.dataset_name, split="test")
 
     if local_rank == 0:
-        print(f"✅ Found {len(dataset)} samples")
+        print(f"✅ Found {len(train_dataset)} training samples")
+        print(f"✅ Found {len(eval_dataset)} validation samples")
 
-    # Filter for numeric answers (if using MathVista)
-    def is_numeric_answer(example):
-        try:
-            float(example["answer"])
-            return True
-        except:
-            return False
+    instruction = get_extraction_prompt()
 
-    if "answer" in dataset.column_names:
-        dataset = dataset.filter(is_numeric_answer)
-        if local_rank == 0:
-            print(f"✅ Filtered to {len(dataset)} numeric answer samples")
-
-    # Resize images to (512, 512) for faster training
-    def resize_images(example):
-        image = example.get("decoded_image", example.get("image"))
-        if image:
-            image = image.resize((512, 512))
-            example["image"] = image
-        return example
-
-    dataset = dataset.map(resize_images)
-
-    # Convert to RGB
-    def convert_to_rgb(example):
-        image = example.get("image")
-        if image and image.mode != "RGB":
-            image = image.convert("RGB")
-            example["image"] = image
-        return example
-
-    dataset = dataset.map(convert_to_rgb)
-
-    # Format conversations
-    def make_conversation(example):
-        text_content = (
-            f"{example['question']}. Also first provide your reasoning or working out"
-            f" on how you would go about solving the question between {REASONING_START} and {REASONING_END}"
-            f" and then your final answer between {SOLUTION_START} and (put a single float here) {SOLUTION_END}"
-        )
-
-        prompt = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": text_content},
-                ],
-            },
-        ]
-        return {
-            "prompt": prompt,
-            "image": example.get("image"),
-            "answer": example.get("answer"),
-        }
-
-    train_dataset = dataset.map(make_conversation)
-
-    # Fix column names for image
-    if "decoded_image" in train_dataset.column_names:
-        train_dataset = train_dataset.remove_columns("decoded_image")
-
-    # Apply chat template
-    train_dataset = train_dataset.map(
-        lambda example: {
-            "prompt": tokenizer.apply_chat_template(
-                example["prompt"],
-                tokenize=False,
-                add_generation_prompt=True,  # Must add for generation
-            )
-        }
-    )
+    lazy_train = LazyVisionDataset(train_dataset, instruction)
+    lazy_eval = LazyVisionDataset(eval_dataset, instruction)
 
     if local_rank == 0:
-        print("✅ Dataset formatted for GRPO training")
-        print(f"   Sample prompt: {train_dataset[0]['prompt'][:200]}...")
+        print("✅ Datasets wrapped with lazy loading (images loaded on-demand)")
 
-    return train_dataset
+    return lazy_train, lazy_eval
 
 
 def build_grpo_trainer(
     model,
     tokenizer,
     train_dataset,
+    eval_dataset,
     args: argparse.Namespace,
     world_size: int,
     local_rank: int = 0,
@@ -253,7 +158,7 @@ def build_grpo_trainer(
         "weight_decay": args.weight_decay,
         "warmup_ratio": args.warmup_ratio,
         "lr_scheduler_type": "cosine",
-        "optim": "adamw_8bit",
+        "optim": "adamw_torch_fused",
         "logging_steps": args.logging_steps,
         "log_completions": args.log_completions,
         "per_device_train_batch_size": args.batch_size,
@@ -267,16 +172,23 @@ def build_grpo_trainer(
         "output_dir": args.output_dir,
         "run_name": args.mlflow_run_name,
         "seed": args.seed,
+        "save_total_limit": 1,
+        "load_best_model_at_end": True,
+        "remove_unused_columns": False,
+        "dataset_text_field": "",
+        "dataset_kwargs": {"skip_prepare_dataset": True},
+        "eval_strategy": "steps",
+        "eval_steps": args.eval_steps,
+        "save_strategy": "steps",
+        "max_length": args.max_seq_length,
         **precision_settings,
     }
 
-    # Add epochs or max_steps
     if args.max_steps > 0:
         training_config["max_steps"] = args.max_steps
     else:
         training_config["num_train_epochs"] = args.epochs
 
-    # Enable GSPO if requested
     if args.use_gspo:
         training_config["importance_sampling_level"] = "sequence"
         training_config["mask_truncated_completions"] = False
@@ -314,13 +226,14 @@ def build_grpo_trainer(
 
     trainer = GRPOTrainer(
         model=model,
-        args=training_args,
-        processing_class=tokenizer,
         reward_funcs=[
-            formatting_reward_func,
-            correctness_reward_func,
+            format_reward_func,           # Priority 1: Must return JSON
+            content_accuracy_reward_func, # Priority 2: Content must match (Exact Match)
+            logic_constraint_reward_func, # Priority 3: Logic constraints
         ],
+        args=training_args,
         train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
     )
 
     return trainer
@@ -355,11 +268,11 @@ def main():
 
     if rank == 0:
         print("📊 Preparing GRPO dataset...")
-    train_dataset = prepare_grpo_dataset(args, tokenizer, local_rank)
+    train_dataset, eval_dataset = prepare_datasets(args, local_rank)
 
     if rank == 0:
         print("🔨 Building GRPO trainer...")
-    trainer = build_grpo_trainer(model, tokenizer, train_dataset, args, world_size, local_rank=rank)
+    trainer = build_grpo_trainer(model, tokenizer, train_dataset, eval_dataset, args, world_size, local_rank=rank)
 
     if rank == 0:
         print("🎯 Starting GRPO training...")
