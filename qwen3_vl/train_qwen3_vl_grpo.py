@@ -228,7 +228,8 @@ def build_grpo_trainer(
 
 def main():
     args = parse_args()
-
+    if args.hf_token:
+        os.environ["HF_TOKEN"] = args.hf_token
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     rank = int(os.environ.get("RANK", 0))
