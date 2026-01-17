@@ -124,36 +124,65 @@ def format_reward_func(completions, **kwargs):
 def content_accuracy_reward_func(completions, ground_truth, **kwargs):
     """
     Reward 3: Chấm điểm độ chính xác nội dung (Semantic check).
+    FIXED: Handles cases where JSON is a List instead of a Dict.
     """
     rewards = []
     
     for completion, gt_item in zip(completions, ground_truth):
         score = 0.0
         
-        # --- Parse GT ---
+        # --- 1. Parse Ground Truth (GT) ---
         gt_data = gt_item
         if isinstance(gt_item, str):
-            try: gt_data = json.loads(gt_item)
-            except: rewards.append(0.0); continue
+            try: 
+                gt_data = json.loads(gt_item)
+            except: 
+                rewards.append(0.0)
+                continue
 
-        # --- Parse Pred ---
+        # FIX: Handle if GT is a list (e.g., [{"metadata":...}])
+        if isinstance(gt_data, list):
+            gt_data = gt_data[0] if len(gt_data) > 0 else {}
+            
+        # Safety check: if it's still not a dict, default to empty to avoid crash
+        if not isinstance(gt_data, dict):
+            gt_data = {}
+
+        # --- 2. Parse Prediction (Pred) ---
         json_text = extract_content_from_solution_tag(completion)
         pred_data = extract_json_from_text(json_text)
 
         if pred_data is None:
-            rewards.append(-1.0); continue
+            rewards.append(-1.0)
+            continue
+            
+        # FIX: Handle if Pred is a list
+        if isinstance(pred_data, list):
+            pred_data = pred_data[0] if len(pred_data) > 0 else {}
 
-        # --- Chấm Metadata ---
+        if not isinstance(pred_data, dict):
+            # If prediction isn't a dict (and wasn't a list of dicts), it's bad structure
+            rewards.append(-1.0)
+            continue
+
+        # --- 3. Compare Metadata ---
+        # Now safe to use .get() because we ensured they are dicts
         gt_meta = gt_data.get("metadata", {})
         pred_meta = pred_data.get("metadata", {})
 
-        # Fix lỗi List/Dict
-        if isinstance(gt_meta, list): gt_meta = gt_meta[0] if gt_meta else {}
-        if isinstance(pred_meta, list): pred_meta = pred_meta[0] if pred_meta else {}
+        # Fix List/Dict nesting inside metadata keys (Defensive coding)
+        if isinstance(gt_meta, list): 
+            gt_meta = gt_meta[0] if gt_meta else {}
+        if isinstance(pred_meta, list): 
+            pred_meta = pred_meta[0] if pred_meta else {}
 
         if not isinstance(pred_meta, dict):
             score -= 1.0
         else:
+            # Ensure gt_meta is iterable before .items()
+            if not isinstance(gt_meta, dict):
+                gt_meta = {}
+                
             for key, gt_val in gt_meta.items():
                 pred_val = pred_meta.get(key)
                 
@@ -173,9 +202,10 @@ def content_accuracy_reward_func(completions, ground_truth, **kwargs):
                 else:
                     score += check_inclusion(pred_val, gt_val)
 
-        # --- Chấm Table Rows ---
+        # --- 4. Compare Table Rows ---
         gt_rows = gt_data.get("table_rows", [])
         pred_rows = pred_data.get("table_rows", [])
+        
         if not isinstance(gt_rows, list): gt_rows = []
         if not isinstance(pred_rows, list): pred_rows = []
 
@@ -196,7 +226,7 @@ def content_accuracy_reward_func(completions, ground_truth, **kwargs):
                 
                 match_s = check_exact_match(p_v, g_v)
                 score += match_s * 1.5
-                if match_s == 0: # Thử inclusion cho cell bảng
+                if match_s == 0: 
                     score += check_inclusion(p_v, g_v)
         
         rewards.append(score)
