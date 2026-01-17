@@ -67,27 +67,37 @@ def check_inclusion(pred, gt):
 
 def format_reward_func(completions, **kwargs):
     """
-    Reward 1: JSON Syntax Check.
-    Mục tiêu: Output phải chứa JSON hợp lệ, bất kể nằm ở đâu.
+    Check 1: JSON Syntax & Spam Check
     """
     rewards = []
     for completion in completions:
+        score = 0.0
+
+        if len(completion) > 0:
+            removal = completion.replace("addCriterion", "").replace("\n", "")
+            if (len(completion) - len(removal)) / len(completion) >= 0.5:
+                score -= 2.0
+
         data = extract_json_from_text(completion)
         if data is None:
-            # Phạt rất nặng vì đây là mục tiêu tối thượng
-            rewards.append(-2.0) 
+            score -= 2.0
         else:
-            # Thưởng vì đã sinh ra được JSON parse được
-            rewards.append(1.0) 
+            score += 1.0
+            
+        rewards.append(score)
     return rewards
 
-def content_accuracy_reward_func(completions, ground_truth, **kwargs):
+def content_accuracy_reward_func(completions, answer, **kwargs):
     """
-    Reward 2: Semantic Accuracy Check.
-    So khớp dữ liệu field-by-field.
+    Check 2: Độ chính xác nội dung.
+    Lưu ý: Tham số thứ 2 tên là 'ground_truth' để khớp với dataset.
     """
     rewards = []
-    
+    ground_truth = answer
+    # In ra mẫu đầu tiên của batch để debug (tùy chọn, rất hữu ích)
+    print(f"\nDEBUG: GT First: {ground_truth[0]}")
+    print(f"DEBUG: Pred First: {completions[0][:100]}...")
+
     for completion, gt_item in zip(completions, ground_truth):
         score = 0.0
         
@@ -97,18 +107,14 @@ def content_accuracy_reward_func(completions, ground_truth, **kwargs):
             try: gt_data = json.loads(gt_item)
             except: rewards.append(0.0); continue
             
-        # Unwrap list logic (cho dataset của bạn)
         if isinstance(gt_data, list) and len(gt_data) > 0: gt_data = gt_data[0]
         if not isinstance(gt_data, dict): gt_data = {}
 
         # --- Parse Pred ---
-        # Không cần extract thẻ nữa, parse thẳng từ completion
         pred_data = extract_json_from_text(completion)
-        
         if pred_data is None:
             rewards.append(-1.0); continue
 
-        # Unwrap list logic (cho prediction)
         if isinstance(pred_data, list) and len(pred_data) > 0: pred_data = pred_data[0]
         if not isinstance(pred_data, dict): 
             rewards.append(-1.0); continue
@@ -117,7 +123,6 @@ def content_accuracy_reward_func(completions, ground_truth, **kwargs):
         gt_meta = gt_data.get("metadata", {})
         pred_meta = pred_data.get("metadata", {})
         
-        # Fix format
         if isinstance(gt_meta, list) and len(gt_meta) > 0: gt_meta = gt_meta[0]
         if isinstance(pred_meta, list) and len(pred_meta) > 0: pred_meta = pred_meta[0]
         
@@ -138,24 +143,17 @@ def content_accuracy_reward_func(completions, ground_truth, **kwargs):
         if not isinstance(gt_rows, list): gt_rows = []
         if not isinstance(pred_rows, list): pred_rows = []
 
-        # Phạt lệch dòng
         score -= (abs(len(gt_rows) - len(pred_rows)) * 0.5)
 
-        # So khớp dòng
         min_len = min(len(gt_rows), len(pred_rows))
         for i in range(min_len):
             g_row = gt_rows[i]
             p_row = pred_rows[i]
             
-            # Ưu tiên check Mã trước
             if check_exact_match(p_row.get("Mã FG"), g_row.get("Mã FG")):
                 score += 3.0 
-            
-            # Check Số lượng
             if check_exact_match(p_row.get("Số lượng"), g_row.get("Số lượng")):
                 score += 2.0
-            
-            # Check ĐVT (Optional - thêm vào nếu cần)
             if check_exact_match(p_row.get("Đvt"), g_row.get("Đvt")):
                 score += 1.0
 

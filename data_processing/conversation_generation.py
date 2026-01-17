@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 # --- CONFIGURATION ---
 # Set the output language for generated conversations
 # Options: "vi" (Vietnamese), "en" (English), "zh" (Chinese), etc.
-OUTPUT_LANGUAGE = "ENGLISH"  # Change this to your desired language
+OUTPUT_LANGUAGE = "japanese"  # Change this to your desired language
 # ----------------------
 
 # --- PROMPT INJECTION TO FIX JSON FORMATTING ---
