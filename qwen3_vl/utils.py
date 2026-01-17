@@ -144,7 +144,6 @@ class LazyVisionGRPODataset(TorchDataset):
             tokenize=False,
             add_generation_prompt=True
         )
-        print(f"Answer text: {answer_text}")
         return {
             "prompt": prompt_text,
             "image": image, 
