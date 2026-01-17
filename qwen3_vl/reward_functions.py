@@ -87,12 +87,12 @@ def format_reward_func(completions, **kwargs):
         rewards.append(score)
     return rewards
 
-def content_accuracy_reward_func(completions, ground_truth, **kwargs):
+def content_accuracy_reward_func(completions, answer, **kwargs):
     """
     Check Content Accuracy với logic Unordered Table Rows
     """
     rewards = []
-    
+    ground_truth = answer
     for completion, gt_item in zip(completions, ground_truth):
         score = 0.0
         
