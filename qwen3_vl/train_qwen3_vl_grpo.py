@@ -169,7 +169,7 @@ def build_grpo_trainer(
         "save_strategy": "steps",
         "temperature": 1.5,
         "min_p": 0.1,
-        "gradient_checkpointing_kwargs": {"use_reentrant": False},
+        "gradient_checkpointing_kwargs": {"use_reentrant": True},
         **precision_settings,
     }
 
