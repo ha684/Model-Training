@@ -1,15 +1,9 @@
-# analyze_token_length.py
 """
 This script is used to analyze the token length distribution of the dataset.
 
-python qwen3_vl/analyze_token_length.py --dataset_name "ha684/senkoV1" --model_name "unsloth/Qwen3-VL-2B-Instruct" --hf_token "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" --sample_limit 100
+python qwen3_vl/analyze_token_length.py
 """
-import argparse
 import os
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import json
 import numpy as np
 import matplotlib.pyplot as plt
@@ -17,16 +11,39 @@ import seaborn as sns
 from tqdm import tqdm
 from datasets import load_dataset
 from transformers import AutoProcessor
-from qwen_vl_utils import process_vision_info  # Thư viện chuẩn thường dùng với Qwen-VL
+from qwen_vl_utils import process_vision_info
 from config.fields_config import get_extraction_prompt
+from PIL import Image
+from io import BytesIO
 
 # ==========================================
-# 1. UTILS (Copy từ code của bạn để đảm bảo tính nhất quán)
+# Configuration Variables
 # ==========================================
+DATASET_NAME = "ha684/senko-V1.2"
+MODEL_NAME = "unsloth/Qwen3-VL-2B-Instruct"
+HF_TOKEN = "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"
+SPLIT = "train"
+SAMPLE_LIMIT = 500
+MAX_PIXELS = 12845056
+
+
 def convert_to_conversation(sample, instruction):
     try:
         multiturn = sample.get("is_multiturn", False)
         image = sample["image"]
+        
+        # HuggingFace dataset image format: dict with 'bytes' and 'path'
+        if isinstance(image, dict):
+            if 'bytes' in image and image['bytes']:
+                # Load từ bytes
+                image = Image.open(BytesIO(image['bytes']))
+            elif 'path' in image and image['path']:
+                # Load từ path
+                image = Image.open(image['path'])
+        elif isinstance(image, str):
+            # Nếu là string path
+            image = Image.open(image)
+        # Nếu đã là PIL Image thì giữ nguyên
 
         if not multiturn:
             conversation = [
@@ -89,44 +106,25 @@ def convert_to_conversation(sample, instruction):
         print(f"Error processing sample: {e}")
         return None
 
-# ==========================================
-# 2. MAIN ANALYSIS LOGIC
-# ==========================================
-def parse_args():
-    parser = argparse.ArgumentParser(description="Analyze Token Length Distribution for Qwen3-VL")
-    parser.add_argument("--dataset_name", type=str, default="ha684/senko1", help="HuggingFace dataset name")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-VL-7B-Instruct", help="Model path/name for tokenizer") 
-    # Lưu ý: Qwen3-VL chưa official rộng rãi, nếu bạn dùng checkpoint local thì trỏ path vào, 
-    # nếu không hãy dùng Qwen2.5-VL hoặc Qwen2-VL vì tokenization logic cho ảnh tương tự.
-    parser.add_argument("--hf_token", type=str, default=None)
-    parser.add_argument("--split", type=str, default="train")
-    parser.add_argument("--sample_limit", type=int, default=-1, help="Limit number of samples to analyze (for speed)")
-    parser.add_argument("--max_pixels", type=int, default=12845056, help="Max pixels for Qwen image processor (affects token count)")
-    return parser.parse_args()
 
 def main():
-    args = parse_args()
-    
-    if args.hf_token:
-        os.environ["HF_TOKEN"] = args.hf_token
+    if HF_TOKEN:
+        os.environ["HF_TOKEN"] = HF_TOKEN
 
-    print(f"⏳ Loading Processor: {args.model_name}...")
+    print(f"⏳ Loading Processor: {MODEL_NAME}...")
     try:
-        # Load Processor (bao gồm Tokenizer và Image Processor)
-        processor = AutoProcessor.from_pretrained(args.model_name, trust_remote_code=True)
+        processor = AutoProcessor.from_pretrained(MODEL_NAME, trust_remote_code=True)
     except Exception as e:
         print(f"Error loading processor: {e}")
         return
 
-    print(f"📊 Loading Dataset: {args.dataset_name} ({args.split})...")
-    dataset = load_dataset(args.dataset_name, split=args.split)
+    print(f"📊 Loading Dataset: {DATASET_NAME} ({SPLIT})...")
+    dataset = load_dataset(DATASET_NAME, split=SPLIT)
     
-    if args.sample_limit > 0:
-        dataset = dataset.select(range(min(len(dataset), args.sample_limit)))
+    if SAMPLE_LIMIT > 0:
+        dataset = dataset.select(range(min(len(dataset), SAMPLE_LIMIT)))
         print(f"⚠️ Limiting analysis to first {len(dataset)} samples.")
 
-    # Import prompt instruction từ file config của bạn nếu có, hoặc dùng default
-    # Ở đây tôi hardcode giả lập để script chạy độc lập
     instruction_prompt = "Describe this image." 
     try:
         instruction_prompt = get_extraction_prompt()
@@ -138,20 +136,14 @@ def main():
     print("🚀 Starting analysis (This involves image processing, so it might take a moment)...")
     
     for sample in tqdm(dataset):
-        # 1. Convert format
         chat_dict = convert_to_conversation(sample, instruction_prompt)
-        if not chat_dict: continue
+        if not chat_dict: 
+            continue
         
         messages = chat_dict["messages"]
-
-        # 2. Prepare text string using chat template
         text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        
-        # 3. Extract Vision Info (Images/Videos)
         image_inputs, video_inputs = process_vision_info(messages)
         
-        # 4. Tokenize & Process Image
-        # Qwen-VL xử lý ảnh dynamic resolution nên số token phụ thuộc vào kích thước ảnh thật
         inputs = processor(
             text=[text],
             images=image_inputs,
@@ -160,12 +152,11 @@ def main():
             return_tensors="pt",
         )
         
-        # 5. Get Length
         seq_len = inputs.input_ids.shape[1]
         token_lengths.append(seq_len)
 
     # ==========================================
-    # 3. STATS & PLOTTING
+    # STATS & PLOTTING
     # ==========================================
     token_lengths = np.array(token_lengths)
     
@@ -197,7 +188,7 @@ def main():
     plt.axvline(p99, color='red', linestyle='--', label=f'P99: {int(p99)}')
     plt.axvline(8192, color='green', linestyle='-', label='Current Max (8192)')
 
-    plt.title(f'Token Length Distribution (Text + Images)\nDataset: {args.dataset_name}')
+    plt.title(f'Token Length Distribution (Text + Images)\nDataset: {DATASET_NAME}')
     plt.xlabel('Sequence Length (Tokens)')
     plt.ylabel('Count')
     plt.legend()
@@ -213,6 +204,7 @@ def main():
         print(f"You can safely REDUCE --max_seq_length to {int(p99)} or {int(p95)} to save VRAM and speed up training.")
     else:
         print(f"⚠️ Your data exceeds 8192 tokens. Consider INCREASING --max_seq_length to {int(p99)} or truncating data.")
+
 
 if __name__ == "__main__":
     main()
