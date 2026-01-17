@@ -113,11 +113,6 @@ class LazyVisionDataset(TorchDataset):
 
 class LazyVisionGRPODataset(TorchDataset):
     def __init__(self, hf_dataset, instruction: str, processor):
-        """
-        hf_dataset: Dataset gốc từ HuggingFace (chưa map/load ảnh vào RAM)
-        instruction: Câu lệnh mặc định (ví dụ: "Solve this problem.")
-        processor: Processor của Qwen2-VL (để dùng apply_chat_template)
-        """
         self.dataset = hf_dataset
         self.instruction = instruction
         self.processor = processor
@@ -132,7 +127,7 @@ class LazyVisionGRPODataset(TorchDataset):
         if hasattr(image, "mode") and image.mode != "RGB":
             image = image.convert("RGB")
 
-        answer_text = sample.get("answer")
+        answer_text = sample.get("text")
 
         messages = [
             {
@@ -149,7 +144,6 @@ class LazyVisionGRPODataset(TorchDataset):
             tokenize=False,
             add_generation_prompt=True
         )
-        print(f"Prompt text: {prompt_text}")
         print(f"Answer text: {answer_text}")
         return {
             "prompt": prompt_text,
