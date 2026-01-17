@@ -453,7 +453,7 @@ def run_pipeline(
                     temperature=1.0,
                 )
                 model = genai.GenerativeModel(
-                    "gemini-3-flash-preview", generation_config=generation_config
+                    "gemini-2.5-flash", generation_config=generation_config
                 )
 
                 success = process_file(

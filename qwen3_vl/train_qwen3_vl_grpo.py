@@ -150,6 +150,7 @@ def build_grpo_trainer(
         "logging_steps": args.logging_steps,
         "log_completions": args.log_completions,
         "per_device_train_batch_size": args.batch_size,
+        "per_device_eval_batch_size": args.eval_batch_size,
         "gradient_accumulation_steps": args.grad_accum,
         "num_generations": args.num_generations,
         "max_prompt_length": args.max_prompt_length,

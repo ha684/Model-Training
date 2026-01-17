@@ -147,7 +147,6 @@ def parse_common_args(parser: argparse.ArgumentParser = None) -> argparse.Argume
         help="MLflow run name",
     )
 
-    # Misc arguments
     parser.add_argument("--seed", type=int, default=3407, help="Random seed")
     parser.add_argument(
         "--push_to_hub", action="store_true", help="Push model to Hugging Face Hub"
