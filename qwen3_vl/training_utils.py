@@ -229,7 +229,7 @@ def init_model(
         max_seq_length=args.max_seq_length,
         load_in_4bit=load_in_4bit,
         load_in_16bit=not load_in_4bit, 
-        use_gradient_checkpointing="unsloth" if not load_in_4bit else None,
+        use_gradient_checkpointing=True if not load_in_4bit else None,
         device_map=device_map,
     )
 
