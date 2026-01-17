@@ -40,23 +40,13 @@ from qwen3_vl.training_utils import (
     setup_mlflow,
 )
 from qwen3_vl.reward_functions import (
-    xml_structure_reward_func,
     format_reward_func,
     content_accuracy_reward_func,
-    logic_constraint_reward_func
 )
-from transformers import TrainerCallback
 
 os.environ["NCCL_P2P_DISABLE"] = "1"
 os.environ["NCCL_IB_DISABLE"] = "1"
 
-class DDPConfigFixCallback(TrainerCallback):
-    def on_train_begin(self, args, state, control, **kwargs):
-        m = kwargs.get("model", None)
-        if m is not None and hasattr(m, "module") and (not hasattr(m, "config")) and hasattr(m.module, "config"):
-            # expose config on the DDP wrapper
-            m.config = m.module.config
-        return control
     
 def parse_args():
     """Parse command line arguments for GRPO training"""
@@ -149,14 +139,6 @@ def build_grpo_trainer(
     """Build GRPOTrainer with reward functions"""
     precision_settings = get_gpu_precision_settings()
 
-    effective_batch = args.batch_size * args.grad_accum * world_size
-    if effective_batch % args.num_generations != 0:
-        min_grad_accum = max(1, (args.num_generations + effective_batch - 1) // (args.batch_size * world_size))
-        if local_rank == 0:
-            print(f"⚠️  Adjusting gradient_accumulation_steps from {args.grad_accum} to {min_grad_accum}")
-            print(f"   (effective_batch must be divisible by num_generations={args.num_generations})")
-        args.grad_accum = min_grad_accum
-
     training_config = {
         "learning_rate": args.learning_rate,
         "adam_beta1": args.adam_beta1,
@@ -232,17 +214,14 @@ def build_grpo_trainer(
     trainer = GRPOTrainer(
         model=model,
         reward_funcs=[
-            xml_structure_reward_func,
             format_reward_func,
             content_accuracy_reward_func,
-            logic_constraint_reward_func,
         ],
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
     )
-    trainer.add_callback(DDPConfigFixCallback())
     
     return trainer
 

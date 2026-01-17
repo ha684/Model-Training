@@ -127,63 +127,34 @@ class LazyVisionGRPODataset(TorchDataset):
 
     def __getitem__(self, idx):
         sample = self.dataset[idx]
-        
-        # 1. Xử lý ảnh (Load ảnh tại thời điểm gọi để tiết kiệm RAM)
-        # Giả sử key ảnh trong dataset của bạn là "image"
         image = sample["image"]
         
-        # Convert sang RGB nếu cần (tránh lỗi kênh Alpha)
         if hasattr(image, "mode") and image.mode != "RGB":
             image = image.convert("RGB")
-            
-        # (Tùy chọn) Resize ảnh nếu quá lớn để tiết kiệm VRAM khi training
-        # if hasattr(image, "resize"):
-        #     image = image.resize((512, 512)) 
 
-        # 2. Xây dựng nội dung Prompt (User Prompt)
-        # Chúng ta chèn yêu cầu Reasoning vào đây
-        # Logic: Câu hỏi gốc + "Hãy suy nghĩ trong thẻ..."
-        
-        # Lấy câu hỏi từ data (giả sử key là 'text' hoặc 'question')
-        question_text = sample.get("text") or sample.get("question", "")
-        
-        # Tạo câu lệnh đầy đủ cho GRPO
-        user_content_text = (
-            f"{self.instruction}\n\nProblem: {question_text}\n\n"
-            f"First provide your reasoning or working out on how you would go about solving the question "
-            f"between {REASONING_START} and {REASONING_END}. "
-            f"Then output your final answer between {SOLUTION_START} and {SOLUTION_END}."
-        )
+        answer_text = sample.get("answer")
 
-        # 3. Tạo list messages theo chuẩn Qwen-VL
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": image}, # Truyền object ảnh PIL
-                    {"type": "text", "text": user_content_text},
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": self.instruction},
                 ],
             }
         ]
 
-        # 4. Dùng Processor để tạo thành chuỗi Prompt text
-        # Lưu ý: add_generation_prompt=True để thêm token của Assistant vào cuối
         prompt_text = self.processor.apply_chat_template(
             messages,
             tokenize=False,
             add_generation_prompt=True
         )
-
-        # 5. Lấy Ground Truth (Đáp án đúng) để tính điểm thưởng (Reward)
-        # Giả sử key đáp án trong data là 'answer' hoặc 'text' (phần assistant cũ)
-        # Bạn cần trích xuất đúng cái "đáp án cuối cùng" để so khớp
-        ground_truth = sample.get("answer") or sample.get("solution") or sample.get("text", "")
-
-
+        print(f"Prompt text: {prompt_text}")
+        print(f"Answer text: {answer_text}")
         return {
             "prompt": prompt_text,
             "image": image, 
-            "ground_truth": ground_truth
+            "answer": answer_text
         }
         
 def compute_metrics_cer(eval_preds, tokenizer):

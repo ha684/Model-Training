@@ -8,14 +8,15 @@ about the content using Gemini Vision API, and saves results to JSON with checkp
 Usage:
     python data_processing/conversation_generation.py --input ./data --output ./output/conversations.json --api-keys ./api_keys.txt
 """
-import random
+
 import argparse
+import ast
 import json
 import logging
+import random
+import re
 import sys
 import time
-import re
-import ast
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -24,19 +25,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import google.generativeai as genai
 from PIL import Image
+
 from data_processing.apikey_manager import APIKeyManager
 from data_processing.utils import (
-    load_image, 
-    pdf_to_images, 
-    append_result, 
-    save_checkpoint, 
-    load_checkpoint, 
-    get_supported_files, 
+    ProcessingCheckpoint,
+    append_result,
     get_conversation_prompt,
-    get_reasoning_prompt,
     get_lazy_user_prompt,
+    get_reasoning_prompt,
+    get_supported_files,
     get_visual_spatial_correction_prompt,
-    ProcessingCheckpoint
+    load_checkpoint,
+    load_image,
+    pdf_to_images,
+    save_checkpoint,
 )
 
 logging.basicConfig(
@@ -48,6 +50,12 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+# --- CONFIGURATION ---
+# Set the output language for generated conversations
+# Options: "vi" (Vietnamese), "en" (English), "zh" (Chinese), etc.
+OUTPUT_LANGUAGE = "ENGLISH"  # Change this to your desired language
+# ----------------------
 
 # --- PROMPT INJECTION TO FIX JSON FORMATTING ---
 # We append strict formatting rules to whatever prompt comes from utils
@@ -62,11 +70,21 @@ IMPORTANT OUTPUT RULES:
 3. Ensure all quotes inside strings are escaped properly.
 """
 
-PROMPT_EXTRACTION = get_conversation_prompt() + STRICT_JSON_INSTRUCTION
-PROMPT_REASONING = get_reasoning_prompt() + STRICT_JSON_INSTRUCTION
-PROMPT_LAZY_USER = get_lazy_user_prompt() + STRICT_JSON_INSTRUCTION
-PROMPT_VISUAL_SPATIAL_CORRECTION = get_visual_spatial_correction_prompt() + STRICT_JSON_INSTRUCTION
+PROMPT_EXTRACTION = (
+    get_conversation_prompt(output_language=OUTPUT_LANGUAGE) + STRICT_JSON_INSTRUCTION
+)
+PROMPT_REASONING = (
+    get_reasoning_prompt(output_language=OUTPUT_LANGUAGE) + STRICT_JSON_INSTRUCTION
+)
+PROMPT_LAZY_USER = (
+    get_lazy_user_prompt(output_language=OUTPUT_LANGUAGE) + STRICT_JSON_INSTRUCTION
+)
+PROMPT_VISUAL_SPATIAL_CORRECTION = (
+    get_visual_spatial_correction_prompt(output_language=OUTPUT_LANGUAGE)
+    + STRICT_JSON_INSTRUCTION
+)
 # -----------------------------------------------
+
 
 def robust_parse_json(text: str) -> Optional[dict]:
     """
@@ -76,8 +94,8 @@ def robust_parse_json(text: str) -> Optional[dict]:
     3. Trailing commas or Python-style dicts
     """
     # 1. Cleaning: Find the outer braces
-    start_idx = text.find('{')
-    end_idx = text.rfind('}')
+    start_idx = text.find("{")
+    end_idx = text.rfind("}")
 
     if start_idx == -1 or end_idx == -1 or end_idx <= start_idx:
         return None
@@ -88,7 +106,7 @@ def robust_parse_json(text: str) -> Optional[dict]:
     try:
         return json.loads(json_str)
     except json.JSONDecodeError:
-        pass # Fallthrough to Strategy B
+        pass  # Fallthrough to Strategy B
 
     # 3. Strategy B: Python AST Eval (The "Nuclear Option")
     # Python's literal_eval is more forgiving with newlines in strings than strict JSON
@@ -97,10 +115,14 @@ def robust_parse_json(text: str) -> Optional[dict]:
         # This regex replaces true/false/null with True/False/None outside of strings is risky,
         # so we do a simple replace and hope it doesn't hit content words.
         # A safer way is using replace on the exact tokens if we had a tokenizer, but this usually works for LLM output.
-        
+
         # Simple fix for common JSON vs Python differences
-        py_str = json_str.replace("true", "True").replace("false", "False").replace("null", "None")
-        
+        py_str = (
+            json_str.replace("true", "True")
+            .replace("false", "False")
+            .replace("null", "None")
+        )
+
         # AST handles unescaped newlines inside strings automatically!
         parsed = ast.literal_eval(py_str)
         if isinstance(parsed, dict):
@@ -113,12 +135,13 @@ def robust_parse_json(text: str) -> Optional[dict]:
     try:
         # Remove raw newlines inside the string (dangerous but might save a result)
         # This collapses lines, but keeps the JSON valid structure
-        clean_str = re.sub(r'(?<!\\)\n', '\\n', json_str) 
+        clean_str = re.sub(r"(?<!\\)\n", "\\n", json_str)
         return json.loads(clean_str)
     except Exception:
         pass
-    
+
     return None
+
 
 def validate_conversation_result(result: dict) -> dict:
     """Validate and normalize conversation generation result."""
@@ -131,11 +154,13 @@ def validate_conversation_result(result: dict) -> dict:
         for turn in result["conversation"]:
             # FIX: Check if turn is actually a dictionary to prevent 'str' has no attribute 'get' error
             if not isinstance(turn, dict):
-                logger.warning(f"  Skipping malformed turn (not a dict): {str(turn)[:50]}...")
+                logger.warning(
+                    f"  Skipping malformed turn (not a dict): {str(turn)[:50]}..."
+                )
                 continue
 
             assistant_content = turn.get("assistant", "")
-            
+
             if isinstance(assistant_content, (dict, list)):
                 assistant_content = json.dumps(assistant_content, ensure_ascii=False)
             elif not isinstance(assistant_content, str):
@@ -149,13 +174,20 @@ def validate_conversation_result(result: dict) -> dict:
 
     return conversation
 
+
 def get_weighted_prompt():
     """Select a prompt based on defined weights."""
-    prompts = [PROMPT_EXTRACTION, PROMPT_REASONING, PROMPT_LAZY_USER, PROMPT_VISUAL_SPATIAL_CORRECTION]
+    prompts = [
+        PROMPT_EXTRACTION,
+        PROMPT_REASONING,
+        PROMPT_LAZY_USER,
+        PROMPT_VISUAL_SPATIAL_CORRECTION,
+    ]
     # Tỷ lệ: Extraction 30%, Reasoning 40%, Lazy User 10%, Spatial 20%
-    weights = [0.3, 0.4, 0.1, 0.2] 
+    weights = [0.3, 0.4, 0.1, 0.2]
     selected_prompt = random.choices(prompts, weights=weights, k=1)[0]
     return selected_prompt
+
 
 def get_prompt_type_name(prompt_content: str) -> str:
     """Helper to get string name of the prompt for logging/saving."""
@@ -166,6 +198,7 @@ def get_prompt_type_name(prompt_content: str) -> str:
     if prompt_content == PROMPT_VISUAL_SPATIAL_CORRECTION:
         return "visual_spatial_correction"
     return "extraction"
+
 
 def generate_conversation_from_image(
     image: Image.Image,
@@ -187,13 +220,15 @@ def generate_conversation_from_image(
             if response.text:
                 # USE NEW ROBUST PARSER V2
                 result = robust_parse_json(response.text)
-                
+
                 if result:
                     validated = validate_conversation_result(result)
                     if validated:
                         return validated
                     else:
-                        logger.warning(f"Parsed JSON but validation returned empty on attempt {attempt + 1}")
+                        logger.warning(
+                            f"Parsed JSON but validation returned empty on attempt {attempt + 1}"
+                        )
                 else:
                     logger.warning(f"Failed to parse JSON on attempt {attempt + 1}")
                     # Optional: Log the start of the failing text for debugging
@@ -238,7 +273,7 @@ def process_file(
     """Process a single file (PDF or image). Returns False if API keys exhausted."""
     file_ext = Path(file_path).suffix.lower()
     file_name = Path(file_path).name
-    
+
     if file_path not in checkpoint.processed_files:
         checkpoint.processed_files[file_path] = {"pages": [], "completed": False}
 
@@ -253,7 +288,7 @@ def process_file(
     # --- RANDOM PROMPT SELECTION ---
     current_prompt = get_weighted_prompt()
     prompt_type_str = get_prompt_type_name(current_prompt)
-    
+
     # --- LOGGING THE CHOSEN PROMPT ---
     logger.info(f"  [PROMPT SELECTED] Type: {prompt_type_str.upper()}")
     # -------------------------------
@@ -266,14 +301,18 @@ def process_file(
 
         for page_num, image in enumerate(images, start=1):
             if page_num in file_progress["pages"]:
-                logger.info(f"  Skipping page {page_num}/{len(images)} (already processed)")
+                logger.info(
+                    f"  Skipping page {page_num}/{len(images)} (already processed)"
+                )
                 continue
 
             logger.info(f"  Processing page {page_num}/{len(images)}")
             checkpoint.current_file = file_path
             checkpoint.current_page = page_num
 
-            result = generate_conversation_from_image(image, model, current_prompt, key_manager)
+            result = generate_conversation_from_image(
+                image, model, current_prompt, key_manager
+            )
 
             if result:
                 output_entry = {
@@ -286,7 +325,9 @@ def process_file(
                     "prompt_type": prompt_type_str,
                 }
                 append_result(output_entry, output_path)
-                logger.info(f"  ✓ Generated conversation for page {page_num} ({len(result)} turns)")
+                logger.info(
+                    f"  ✓ Generated conversation for page {page_num} ({len(result)} turns)"
+                )
             else:
                 output_entry = {
                     "source_file": file_path,
@@ -299,7 +340,9 @@ def process_file(
                     "prompt_type": prompt_type_str,
                 }
                 append_result(output_entry, output_path)
-                logger.warning(f"  ✗ Failed to generate conversation for page {page_num}")
+                logger.warning(
+                    f"  ✗ Failed to generate conversation for page {page_num}"
+                )
 
             file_progress["pages"].append(page_num)
             checkpoint.total_processed += 1
@@ -313,7 +356,9 @@ def process_file(
         try:
             image = load_image(file_path)
 
-            result = generate_conversation_from_image(image, model, current_prompt, key_manager)
+            result = generate_conversation_from_image(
+                image, model, current_prompt, key_manager
+            )
 
             if result:
                 output_entry = {
@@ -386,7 +431,9 @@ def run_pipeline(
     logger.info(f"Output: {output_path}")
     logger.info(f"Checkpoint: {checkpoint_path}")
     logger.info(f"Files to process: {len(files)}")
-    logger.info(f"API keys: {len(key_manager.keys)} keys × {key_manager.REQUESTS_PER_DAY} req/day = {total_max_requests} max requests/day")
+    logger.info(
+        f"API keys: {len(key_manager.keys)} keys × {key_manager.REQUESTS_PER_DAY} req/day = {total_max_requests} max requests/day"
+    )
     logger.info("=" * 60)
     logger.info(key_manager.get_status_summary())
     logger.info("=" * 60)
@@ -405,7 +452,9 @@ def run_pipeline(
                 generation_config = genai.GenerationConfig(
                     temperature=1.0,
                 )
-                model = genai.GenerativeModel("gemini-3-flash-preview", generation_config=generation_config)
+                model = genai.GenerativeModel(
+                    "gemini-3-flash-preview", generation_config=generation_config
+                )
 
                 success = process_file(
                     file_path=file_path,
@@ -424,9 +473,16 @@ def run_pipeline(
 
                 if "daily" in error_msg:
                     reason = "daily_limit"
-                elif "quota" in error_msg or "rate" in error_msg or "limit" in error_msg:
+                elif (
+                    "quota" in error_msg or "rate" in error_msg or "limit" in error_msg
+                ):
                     reason = "rate_limit"
-                elif "api key" in error_msg or "invalid" in error_msg or "unauthorized" in error_msg or "forbidden" in error_msg:
+                elif (
+                    "api key" in error_msg
+                    or "invalid" in error_msg
+                    or "unauthorized" in error_msg
+                    or "forbidden" in error_msg
+                ):
                     reason = "invalid_key"
                 else:
                     logger.error(f"Unexpected error: {e}")
