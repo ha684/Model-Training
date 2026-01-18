@@ -340,13 +340,42 @@ def main():
 
         # Push to Hub
         if args.push_to_hub and args.hub_model_id and rank == 0:
-            print(f"🚀 Pushing model to Hugging Face Hub: {args.hub_model_id}...")
-            try:
-                model.push_to_hub(args.hub_model_id, use_temp_dir=True)
-                tokenizer.push_to_hub(args.hub_model_id, use_temp_dir=True)
-                print("✅ Push to Hub completed!")
-            except Exception as e:
-                print(f"⚠️ Failed to push to hub: {e}")
+            hf_token = args.hf_token or os.environ.get("HF_TOKEN")
+            if not hf_token:
+                print("⚠️ HF_TOKEN not found. Cannot push to Hub.")
+            else:
+                if args.merge_and_push:
+                    # Merge LoRA with base model and push merged model
+                    print(f"🔀 Merging LoRA adapter with base model...")
+                    print(f"🚀 Pushing merged {args.save_method} model to Hugging Face Hub: {args.hub_model_id}...")
+                    try:
+                        if args.save_method == "merged_16bit":
+                            model.push_to_hub_merged(
+                                args.hub_model_id,
+                                tokenizer,
+                                save_method="merged_16bit",
+                                token=hf_token
+                            )
+                        elif args.save_method == "gguf":
+                            print(f"   Quantization method: {args.quantization_method}")
+                            model.push_to_hub_gguf(
+                                args.hub_model_id,
+                                tokenizer,
+                                quantization_method=args.quantization_method,
+                                token=hf_token
+                            )
+                        print("✅ Merged model pushed to Hub successfully!")
+                    except Exception as e:
+                        print(f"⚠️ Failed to merge and push to hub: {e}")
+                else:
+                    # Just push LoRA adapter (original behavior)
+                    print(f"🚀 Pushing LoRA adapter to Hugging Face Hub: {args.hub_model_id}...")
+                    try:
+                        model.push_to_hub(args.hub_model_id, use_temp_dir=True)
+                        tokenizer.push_to_hub(args.hub_model_id, use_temp_dir=True)
+                        print("✅ LoRA adapter pushed to Hub completed!")
+                    except Exception as e:
+                        print(f"⚠️ Failed to push to hub: {e}")
 
     if args.report_to == "mlflow" and rank == 0:
         print("📤 Uploading extra artifacts to MLflow...")

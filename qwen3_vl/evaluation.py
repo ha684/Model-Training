@@ -25,29 +25,45 @@ from dotenv import load_dotenv
 from PIL import Image
 from tqdm.asyncio import tqdm as atqdm
 
-from config.fields_config import get_extraction_prompt
+from config.fields_config import get_extraction_prompt_evaluation
 
 load_dotenv()
 
 HF_TOKEN = os.getenv("hf_token")
-base_url = os.getenv("base_url", "https://a1aacb296bc6.ngrok-free.app")
+base_url = os.getenv("base_url", "https://8fad34849342.ngrok-free.app")
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "ha684/qwen3-vl-2b-V1.3"
-DATASET_NAME = "ha684/senko-V1.1"
+MODEL_NAME = "ha684/qwen3-vl-2b-grpo-V1"
+DATASET_NAME = "ha684/vl-vi-conv-mix-v1.1"
 DATASET_SPLIT = "validation"
 MAX_CONCURRENT_REQUESTS = 3
 TIMEOUT = 180
 
 
-def image_to_base64(image: Image.Image) -> str:
+def image_to_base64(image) -> str:
     """Convert PIL Image to base64 string."""
-    buffered = BytesIO()
-    image.save(buffered, format="PNG")
-    return base64.b64encode(buffered.getvalue()).decode("utf-8")
+    # Handle case where image might be a dict (from datasets)
+    if isinstance(image, dict):
+        # If it's already a PIL Image wrapped in dict
+        if 'bytes' in image:
+            return base64.b64encode(image['bytes']).decode('utf-8')
+        # Otherwise try to get the actual image
+        image = image.get('image', image)
+    
+    # If it's a PIL Image
+    if isinstance(image, Image.Image):
+        buffered = BytesIO()
+        image.save(buffered, format="PNG")
+        return base64.b64encode(buffered.getvalue()).decode("utf-8")
+    
+    # If it's already bytes
+    if isinstance(image, bytes):
+        return base64.b64encode(image).decode('utf-8')
+    
+    raise ValueError(f"Unsupported image type: {type(image)}")
 
 
 async def call_vllm_api_async(
-    session: aiohttp.ClientSession, image: Image.Image, prompt: str
+    session: aiohttp.ClientSession, image, prompt: str
 ) -> str:
     """Call vLLM API with image and prompt asynchronously."""
     image_base64 = image_to_base64(image)
@@ -226,7 +242,7 @@ def compare_table_rows(
     Compare table rows between prediction and ground truth.
     A row is correct if:
     - Mã FG matches exactly (after normalization)
-    - The quantity matches (compare the larger value if both Thùng and Pcs exist)
+    - Số lượng matches exactly
     """
     if not gt_rows:
         return 0, 0, []
@@ -239,12 +255,7 @@ def compare_table_rows(
 
     for gt_row in gt_rows:
         gt_fg = normalize_value(gt_row.get("Mã FG"))
-        gt_qty_thung = normalize_value(gt_row.get("Số lượng(Thùng)"))
-        gt_qty_pcs = normalize_value(gt_row.get("Số lượng(Pcs)"))
-        
-        # Get the larger quantity value from ground truth
-        gt_quantities = [q for q in [gt_qty_thung, gt_qty_pcs] if q is not None]
-        gt_qty = max(gt_quantities) if gt_quantities else None
+        gt_qty = normalize_value(gt_row.get("Số lượng"))
 
         row_detail = {"gt_fg": gt_fg, "match": False, "errors": []}
 
@@ -254,20 +265,14 @@ def compare_table_rows(
             continue
 
         pred_row = pred_by_fg[gt_fg]
-        pred_qty_thung = normalize_value(pred_row.get("Số lượng(Thùng)"))
-        pred_qty_pcs = normalize_value(pred_row.get("Số lượng(Pcs)"))
-        
-        # Get the larger quantity value from prediction
-        pred_quantities = [q for q in [pred_qty_thung, pred_qty_pcs] if q is not None]
-        pred_qty = max(pred_quantities) if pred_quantities else None
+        pred_qty = normalize_value(pred_row.get("Số lượng"))
 
-        # Check if quantities match (comparing the larger values)
+        # Check if quantities match
         qty_match = (gt_qty == pred_qty) if (gt_qty is not None and pred_qty is not None) else False
 
         if not qty_match:
             row_detail["errors"].append(
-                f"Quantity mismatch: pred={pred_qty} (Thùng={pred_row.get('Số lượng(Thùng)')}, Pcs={pred_row.get('Số lượng(Pcs)')}) "
-                f"vs gt={gt_qty} (Thùng={gt_row.get('Số lượng(Thùng)')}, Pcs={gt_row.get('Số lượng(Pcs)')})"
+                f"Quantity mismatch: pred={pred_qty} vs gt={gt_qty}"
             )
 
         if qty_match:
@@ -281,7 +286,7 @@ def compare_table_rows(
 
 async def evaluate_single_async(
     session: aiohttp.ClientSession,
-    image: Image.Image,
+    image,
     ground_truth: str,
     prompt: str,
     source_file: str = None,
@@ -430,7 +435,7 @@ def main():
     print(f"Columns: {dataset.column_names}")
     print(f"Concurrent requests: {MAX_CONCURRENT_REQUESTS}")
 
-    prompt = get_extraction_prompt()
+    prompt = get_extraction_prompt_evaluation()
 
     print("\nStarting evaluation...")
     results = asyncio.run(evaluate_dataset_async(dataset, prompt))
