@@ -1,3 +1,4 @@
+# config/fields_config_1.py
 # -*- coding: utf-8 -*-
 """
 Configuration file for data extraction fields and prompts.
@@ -28,10 +29,160 @@ METADATA_FIELDS = [
 TABLE_ROW_FIELDS = [f for f in DEFAULT_FIELDS if f not in METADATA_FIELDS]
 
 
+# def get_extraction_prompt() -> str:
+#     """
+#     Generate the extraction prompt for Vision Language Model API.
+#     The prompt includes all fields to extract and output format specification.
+#     """
+#     fields_list = "\n".join([f"  - {field}" for field in DEFAULT_FIELDS])
+#     metadata_fields_list = ", ".join([f'"{field}"' for field in METADATA_FIELDS])
+#     table_row_fields_list = ", ".join([f'"{field}"' for field in TABLE_ROW_FIELDS])
+
+#     prompt = f"""You are an expert in extracting structured data from Vietnamese delivery notes (phiếu giao hàng), cargo documents, and invoices.
+
+# Extract the following fields from the provided document image:
+
+# {fields_list}
+
+# FIELD DEFINITIONS AND EXTRACTION RULES:
+
+# METADATA FIELDS (Document-level information):
+
+# 1. "Số phiếu" (Document Number/PO Number):
+#    - Look for labels such as: "Số PO", "PO/PO No", "S.PO/PO No.", "Số:", "Số PGC", "Number"
+#    - Usually located in the top-right area of the document header
+#    - Common formats: "PXB25110076", "2544051804257", "252.104.868.0263", "252-104-866-7210"
+#    - Extract the number exactly as shown, preserving dots, dashes, and spaces
+#    - DO NOT extract handwritten page numbers (e.g., "1/2", "2/2")
+#    - DO NOT extract numbers that appear after "Mã AR" field (these are AR code suffixes, not document numbers)
+#    - DO NOT extract dates or reference numbers from table rows
+#    - If the document number is unclear or not found, set to null
+
+# 2. "Ngày chứng từ(dd/mm/yyyy)" (Document Date):
+#    - Look for labels: "Ngày/Date:", "Document date:", "Ngày chứng từ:"
+#    - Located near the document number in the header
+#    - Convert to dd/mm/yyyy format (e.g., "03/11/2025")
+#    - If multiple dates exist, choose the one labeled as document date or issue date
+#    - If unclear or not found, set to null
+
+# 3. "Ngày xuất(dd/mm/yyyy)" (Export/Delivery Date):
+#    - Look for labels: "Ngày giao hàng", "Delivery date:", "Ngày xuất:", "Ngày xuất kho"
+#    - Convert to dd/mm/yyyy format
+#    - This may be the same as or different from the document date
+#    - If not explicitly shown, set to null
+
+# 4. "Kho nhận" (Receiving Party/Customer Name):
+#    - Look for sections labeled: "Bên nhận hàng:", "Đơn vị nhận hàng:", "Tên người mua hàng:", "Customer's name:", "Đơn vị nhận:"
+#    - This field contains the COMPANY NAME or WAREHOUSE NAME of the receiving party
+#    - Extract the complete name as shown in the document
+#    - Examples: "CÔNG TY TNHH THIẾT BỊ CÔNG NGHIỆP VÀ DỊCH VỤ KỸ THUẬT THÁI SƠN", "CÔNG TY TNHH DỊCH VỤ EB", "kho SENKO", "DC KHO HẢI PHÒNG"
+#    - This is different from the detailed street address
+#    - If not found, set to null
+
+# 5. "Địa chỉ" (Delivery Address):
+#    - Look for labels: "Địa chỉ:", "Địa chỉ nhận hàng:", "Delivery address:", "Đia chỉ:"
+#    - This field contains the FULL STREET ADDRESS with specific location details
+#    - Extract complete address including street numbers, street names, wards, districts, and cities
+#    - Examples: "Số 77 Kim Anh, Xã Nội Bài, TP.Hà Nội", "Số 163, Đường Phan Đăng Lưu, Phường Cầu Kiều, Thành phố Hồ Chí Minh, Việt Nam", "KM54+100, quốc lộ 5, khu 3, phường nhi châu, tp hải dương"
+#    - Note: This field is optional and may not exist in all documents
+#    - DO NOT confuse with company/warehouse names (those belong in "Kho nhận")
+#    - If no address field is present, set to null
+
+# 6. "Mã AR" (AR Code/Customer Account Code):
+#    - Look for labels: "Mã AR:", "Khách hàng:", "Customer code:", "AR Code:"
+#    - Format typically includes alphanumeric characters with slashes or underscores
+#    - Examples: "A68/750", "AR5239_141", "A68/750_141"
+#    - Extract the COMPLETE code including any suffixes or numbers after underscores
+#    - The numbers after underscores are part of the AR code, NOT the document number
+#    - If not found, set to null
+
+# TABLE ROW FIELDS (Item-level information from product table):
+
+# 7. "Mã FG" (Finished Goods Code/Product Code):
+#    - The product identifier typically found in the leftmost column of the product table
+#    - Common formats: "PG1490", "PG1495", "FGB0027", "FC9345", "PL2368", "PG8023"
+#    - Extract the exact alphanumeric code as shown
+#    - Each row in the product table represents one product with its own Mã FG
+
+# 8. "Đvt" (Unit of Measurement):
+#    - Look for column headers: "Đvt", "ĐVT", "DVT", "Unit", "Đơn vị", "Đơn vị tính"
+#    - Common Vietnamese units include:
+#      * "Hộp" (box)
+#      * "Hũ" (jar)
+#      * "Gói" (pack/packet)
+#      * "Chai" (bottle)
+#      * "Thùng" (carton/crate)
+#      * "Kg" (kilogram)
+#      * "Lít" (liter)
+#    - Extract the unit name exactly as shown in the document
+#    - Preserve Vietnamese diacritical marks
+
+# 9. "Số lượng" (Quantity):
+#    - Look for columns labeled: "Số lượng", "SL", "Quantity", "Qty", or similar
+#    - The table may have multiple quantity columns such as "Số lượng(Thùng)" for cartons and "Số lượng(Pcs)" for individual pieces
+#    - Extract the quantity value that corresponds to the product in that specific row
+#    - If the table shows both carton quantity and piece quantity, extract the value that represents the actual shipped quantity for that product
+#    - Common scenarios:
+#      * If only one quantity column exists, extract that value
+#      * If multiple quantity columns exist (Thùng and Pcs), extract the value from the primary quantity column used in the document
+#      * Look at the table structure and column headers to determine which quantity is being reported
+#    - Extract only the numeric value
+#    - If the quantity is unclear or not found, set to null
+
+# OUTPUT FORMAT:
+
+# Return data in JSON format with the following structure:
+
+# {{
+#   "metadata": {{
+#     {", ".join([f'"{f}": <value or null>' for f in METADATA_FIELDS])}
+#   }},
+#   "table_rows": [
+#     {{
+#       {", ".join([f'"{f}": <value or null>' for f in TABLE_ROW_FIELDS])}
+#     }},
+#     ... (one object per table row)
+#   ]
+# }}
+
+# CRITICAL EXTRACTION RULES:
+
+# 1. "metadata" contains document-level information: {metadata_fields_list}
+# 2. "table_rows" contains an array of objects, where each object represents one row from the product table
+# 3. Each table row object contains: {table_row_fields_list}
+# 4. Extract values exactly as they appear in the document
+# 5. Preserve all formatting including dots, dashes, and spaces in numeric fields
+# 6. Preserve all Vietnamese diacritical marks (ă, â, đ, ê, ô, ơ, ư, etc.)
+# 7. For date fields, convert to dd/mm/yyyy format. If the format is unclear, set to null
+# 8. For fields that cannot be found or do not exist in the document, set the value to null
+# 9. DO NOT infer, guess, or make assumptions about missing data
+# 10. DO NOT confuse "Kho nhận" (company/warehouse name) with "Địa chỉ" (street address)
+# 11. DO NOT confuse "Số phiếu" (document number) with handwritten page numbers or AR code suffixes
+# 12. Return ONLY valid JSON with no additional text, explanations, or markdown formatting
+
+# VALIDATION CHECKLIST:
+
+# Before returning your answer, verify that:
+# - "Số phiếu" is extracted from a labeled document number field, not from page numbers or AR codes
+# - "Số phiếu" preserves its original format with dots, dashes, or spaces
+# - "Kho nhận" contains a company or warehouse name, not a street address
+# - "Địa chỉ" contains a street address with location details, or is null if not present
+# - "Mã AR" includes the complete code with any suffixes
+# - All Vietnamese diacritics are correctly preserved
+# - Dates are in dd/mm/yyyy format or null
+# - Each product table row is a separate object in the "table_rows" array
+# - "Số lượng" for each row corresponds to the correct product quantity
+# - No values are invented or inferred
+# - Output is valid, parseable JSON
+
+# Extract data from this document now:"""
+
+#     return prompt
+
 def get_extraction_prompt() -> str:
     """
     Generate the extraction prompt for Vision Language Model API.
-    The prompt includes all fields to extract and output format specification.
+    This is a validation pass with slightly different instruction ordering.
     """
     fields_list = "\n".join([f"  - {field}" for field in DEFAULT_FIELDS])
     metadata_fields_list = ", ".join([f'"{field}"' for field in METADATA_FIELDS])
@@ -39,73 +190,119 @@ def get_extraction_prompt() -> str:
 
     prompt = f"""You are an expert in extracting structured data from Vietnamese delivery notes (phiếu giao hàng), cargo documents, and invoices.
 
-Extract the following fields from the provided document image:
+Your task is to extract the following fields from the provided document image:
 
 {fields_list}
 
-FIELD DEFINITIONS AND EXTRACTION RULES:
+EXTRACTION INSTRUCTIONS:
 
-METADATA FIELDS (Document-level information):
+DOCUMENT-LEVEL FIELDS (Metadata):
 
-1. "Số phiếu" (Document Number/PO Number):
-   - Look for labels such as: "Số PO", "PO/PO No", "S.PO/PO No.", "Số:", "Số PGC", "Number"
-   - Usually located in the top-right area of the document header
-   - Common formats: "PXB25110076", "2544051804257", "252.104.868.0263", "252-104-866-7210"
-   - Extract the number exactly as shown, preserving dots, dashes, and spaces
-   - DO NOT extract handwritten page numbers (e.g., "1/2", "2/2")
-   - DO NOT extract numbers that appear after "Mã AR" field (these are AR code suffixes, not document numbers)
-   - DO NOT extract dates or reference numbers from table rows
-   - If the document number is unclear or not found, set to null
+1. **"Số phiếu"** (Document Number/PO Number):
+   - Search for field labels: "Số PO", "PO/PO No", "S.PO/PO No.", "Số:", "Số PGC", "Number"
+   - Typically found in the header section (top-right area)
+   - Extract the complete number preserving dots, dashes, and spaces EXACTLY as shown
+   - Common formats include: "PXB25110076", "2544051804257", "252.104.868.0263", "252-104-866-7210"
+   - CRITICAL VERIFICATION:
+     * Is this number next to or under a label like "Số PO" or "Number"? → YES = extract it
+     * Is this a handwritten number like "1/2" or "2/2"? → NO = ignore it
+     * Is this number appearing after "Mã AR:" field? → NO = it's part of AR code
+     * Does this number look like a date (03/11/2025)? → NO = it's a date field
+   - Common mistakes to avoid:
+     * Extracting "252.104.868.0263" when you see "Mã AR: A68/750_252.104.868.0263" (the long number is NOT Số phiếu)
+     * Extracting "1/2" from handwritten page indicators
+   - If the document number cannot be clearly identified from a labeled field, set to null
 
-2. "Ngày chứng từ(dd/mm/yyyy)" (Document Date):
-   - Look for labels: "Ngày/Date:", "Document date:", "Ngày chứng từ:"
-   - Located near the document number in the header
-   - Convert to dd/mm/yyyy format (e.g., "03/11/2025")
-   - If multiple dates exist, choose the one labeled as document date or issue date
-   - If unclear or not found, set to null
+2. **"Ngày chứng từ(dd/mm/yyyy)"** (Document Date):
+   - Search for labels: "Ngày/Date:", "Document date:", "Ngày chứng từ:"
+   - Usually positioned near the document number
+   - Output format must be EXACTLY dd/mm/yyyy (e.g., "03/11/2025")
+   - Conversion rules:
+     * If you see "03/11/2025" → keep as "03/11/2025"
+     * If you see "3/11/2025" → convert to "03/11/2025" (add leading zero)
+     * If you see "20251103" or "2025-11-03" → convert to "03/11/2025"
+   - CRITICAL: Do not confuse with "Ngày xuất" (delivery date)
+   - If multiple dates exist, choose the one specifically labeled as document date or issue date
+   - If the date is ambiguous or missing, set to null
 
-3. "Ngày xuất(dd/mm/yyyy)" (Export/Delivery Date):
-   - Look for labels: "Ngày giao hàng", "Delivery date:", "Ngày xuất:", "Ngày xuất kho"
-   - Convert to dd/mm/yyyy format
-   - This may be the same as or different from the document date
-   - If not explicitly shown, set to null
+3. **"Ngày xuất(dd/mm/yyyy)"** (Export/Delivery Date):
+   - Search for labels: "Ngày giao hàng", "Delivery date:", "Ngày xuất:", "Ngày xuất kho"
+   - Output format must be EXACTLY dd/mm/yyyy
+   - Conversion rules:
+     * If you see "03/11/2025" → keep as "03/11/2025"
+     * If you see "3/11/2025" → convert to "03/11/2025" (add leading zero)
+     * If you see "20251103" or "2025-11-03" → convert to "03/11/2025"
+   - CRITICAL: This may be identical to or different from "Ngày chứng từ"
+   - If both dates are the same, verify you're extracting from the correct field
+   - If not explicitly stated, set to null
 
-4. "Kho nhận" (Receiving Party/Customer Name):
-   - Look for sections labeled: "Bên nhận hàng:", "Đơn vị nhận hàng:", "Tên người mua hàng:", "Customer's name:", "Đơn vị nhận:"
-   - This field contains the COMPANY NAME or WAREHOUSE NAME of the receiving party
-   - Extract the complete name as shown in the document
+4. **"Kho nhận"** (Receiving Party/Customer):
+   - Search for sections: "Bên nhận hàng:", "Đơn vị nhận hàng:", "Tên người mua hàng:", "Customer's name:", "Đơn vị nhận:"
+   - This field represents the COMPANY NAME or WAREHOUSE NAME ONLY
+   - Extract the full organizational name EXACTLY as displayed
    - Examples: "CÔNG TY TNHH THIẾT BỊ CÔNG NGHIỆP VÀ DỊCH VỤ KỸ THUẬT THÁI SƠN", "CÔNG TY TNHH DỊCH VỤ EB", "kho SENKO", "DC KHO HẢI PHÒNG"
-   - This is different from the detailed street address
-   - If not found, set to null
+   - CRITICAL VERIFICATION:
+     * Does this value contain street names, numbers, wards, or districts? → NO = it's an address, not company name
+     * Does this value start with "Số", "KM", or contain "Phường", "Quận"? → NO = it's an address
+     * Is this the first line under "Bên nhận hàng" before the address? → YES = likely company name
+   - Common mistakes:
+     * Mixing company name with address: "CÔNG TY ABC, Số 123 Đường XYZ" → extract only "CÔNG TY ABC"
+     * Confusing warehouse location with warehouse name
+   - Preserve exact capitalization and spacing
+   - This is distinct from the street address field
+   - If missing, set to null
 
-5. "Địa chỉ" (Delivery Address):
-   - Look for labels: "Địa chỉ:", "Địa chỉ nhận hàng:", "Delivery address:", "Đia chỉ:"
-   - This field contains the FULL STREET ADDRESS with specific location details
-   - Extract complete address including street numbers, street names, wards, districts, and cities
+5. **"Địa chỉ"** (Delivery Address):
+   - Search for labels: "Địa chỉ:", "Địa chỉ nhận hàng:", "Delivery address:", "Đia chỉ:"
+   - This field contains the COMPLETE STREET ADDRESS including location details
+   - Extract full address with street numbers, street names, wards, districts, cities EXACTLY as shown
    - Examples: "Số 77 Kim Anh, Xã Nội Bài, TP.Hà Nội", "Số 163, Đường Phan Đăng Lưu, Phường Cầu Kiều, Thành phố Hồ Chí Minh, Việt Nam", "KM54+100, quốc lộ 5, khu 3, phường nhi châu, tp hải dương"
-   - Note: This field is optional and may not exist in all documents
-   - DO NOT confuse with company/warehouse names (those belong in "Kho nhận")
-   - If no address field is present, set to null
+   - CRITICAL VERIFICATION:
+     * Does this field exist with a label "Địa chỉ"? → YES = extract it
+     * Is this just a company name without street details? → NO = it belongs in "Kho nhận"
+     * Does the document show no address field at all? → set to null
+   - Common mistakes:
+     * Inventing an address when none is shown
+     * Copying the company name into this field
+     * Extracting partial address (missing ward/district/city)
+   - NOTE: This is an OPTIONAL field - many documents do not have it
+   - Preserve exact spelling, capitalization, and punctuation
+   - Do not confuse with company/warehouse names (those belong in "Kho nhận")
+   - If no address field exists in the document, MUST set to null
 
-6. "Mã AR" (AR Code/Customer Account Code):
-   - Look for labels: "Mã AR:", "Khách hàng:", "Customer code:", "AR Code:"
-   - Format typically includes alphanumeric characters with slashes or underscores
+6. **"Mã AR"** (AR Code/Customer Account Code):
+   - Search for labels: "Mã AR:", "Khách hàng:", "Customer code:", "AR Code:"
+   - Format typically contains alphanumeric characters with slashes or underscores
    - Examples: "A68/750", "AR5239_141", "A68/750_141"
-   - Extract the COMPLETE code including any suffixes or numbers after underscores
-   - The numbers after underscores are part of the AR code, NOT the document number
+   - CRITICAL: Extract the COMPLETE code including ALL suffix numbers after underscores or slashes
+   - Common mistakes:
+     * Extracting only "A68/750" when the full code is "A68/750_141" (missing _141)
+     * Confusing numbers after "Mã AR" as document number (they belong to AR code)
+     * Extracting "A68" and "750_141" separately (should be one complete code)
+   - VERIFICATION:
+     * If you see "Mã AR: A68/750_141" → extract "A68/750_141" (the ENTIRE code)
+     * If you see multiple numbers/codes on the same line → extract the one closest to the label
+   - The portion after underscores is PART OF the AR code, not a separate field
+   - Preserve exact format with slashes, underscores, and spacing
    - If not found, set to null
 
-TABLE ROW FIELDS (Item-level information from product table):
+ITEM-LEVEL FIELDS (Table Rows):
 
-7. "Mã FG" (Finished Goods Code/Product Code):
-   - The product identifier typically found in the leftmost column of the product table
+7. **"Mã FG"** (Finished Goods Code/Product Code):
+   - Located in the leftmost column of the product table
    - Common formats: "PG1490", "PG1495", "FGB0027", "FC9345", "PL2368", "PG8023"
-   - Extract the exact alphanumeric code as shown
-   - Each row in the product table represents one product with its own Mã FG
+   - Extract the alphanumeric code EXACTLY as shown (case-sensitive)
+   - CRITICAL: Each table row represents a distinct product with its own code
+   - Common mistakes:
+     * Extracting row numbers instead of product codes
+     * Missing letters or numbers (e.g., "PG149" instead of "PG1490")
+     * Confusing similar codes (e.g., "PG1490" vs "PG1495")
+   - Preserve exact capitalization and spacing
+   - If a row has no product code, set to null for that row
 
-8. "Đvt" (Unit of Measurement):
+8. **"Đvt"** (Unit of Measurement):
    - Look for column headers: "Đvt", "ĐVT", "DVT", "Unit", "Đơn vị", "Đơn vị tính"
-   - Common Vietnamese units include:
+   - Common Vietnamese units:
      * "Hộp" (box)
      * "Hũ" (jar)
      * "Gói" (pack/packet)
@@ -113,24 +310,36 @@ TABLE ROW FIELDS (Item-level information from product table):
      * "Thùng" (carton/crate)
      * "Kg" (kilogram)
      * "Lít" (liter)
-   - Extract the unit name exactly as shown in the document
-   - Preserve Vietnamese diacritical marks
+   - Extract unit name EXACTLY as displayed in the document
+   - CRITICAL: Preserve all Vietnamese diacritical marks precisely
+   - Common mistakes:
+     * "Hop" instead of "Hộp" (missing tone mark)
+     * "Hu" instead of "Hũ" (missing tone mark)
+     * "Goi" instead of "Gói" (missing tone mark)
+   - If the unit for a row is unclear or missing, set to null for that row
 
-9. "Số lượng" (Quantity):
-   - Look for columns labeled: "Số lượng", "SL", "Quantity", "Qty", or similar
-   - The table may have multiple quantity columns such as "Số lượng(Thùng)" for cartons and "Số lượng(Pcs)" for individual pieces
-   - Extract the quantity value that corresponds to the product in that specific row
-   - If the table shows both carton quantity and piece quantity, extract the value that represents the actual shipped quantity for that product
-   - Common scenarios:
-     * If only one quantity column exists, extract that value
-     * If multiple quantity columns exist (Thùng and Pcs), extract the value from the primary quantity column used in the document
-     * Look at the table structure and column headers to determine which quantity is being reported
-   - Extract only the numeric value
-   - If the quantity is unclear or not found, set to null
+9. **"Số lượng"** (Quantity):
+   - Search for columns: "Số lượng", "SL", "Quantity", "Qty", or similar
+   - The table may contain multiple quantity columns (e.g., "Số lượng(Thùng)" for cartons and "Số lượng(Pcs)" for pieces)
+   - Extract the quantity value corresponding to EACH SPECIFIC product in that row
+   - Guidelines for extraction:
+     * Single quantity column: extract that value
+     * Multiple quantity columns: extract the primary quantity shown for that specific product
+     * Review table structure and column headers carefully to determine the reported quantity
+   - CRITICAL VERIFICATION:
+     * Extract ONLY numeric values (no text, no units)
+     * Each row gets its OWN quantity (do not sum across rows)
+     * Verify you're reading from the correct column for that product
+   - Common mistakes:
+     * Extracting quantity from wrong column
+     * Including units in the number (e.g., "100 Hộp" instead of "100")
+     * Summing quantities instead of extracting individual row values
+     * Confusing "Số lượng(Thùng)" with "Số lượng(Pcs)"
+   - If quantity is unclear or missing for a row, set to null for that row
 
-OUTPUT FORMAT:
+JSON OUTPUT FORMAT:
 
-Return data in JSON format with the following structure:
+Return the data in this exact JSON structure:
 
 {{
   "metadata": {{
@@ -144,36 +353,36 @@ Return data in JSON format with the following structure:
   ]
 }}
 
-CRITICAL EXTRACTION RULES:
+EXTRACTION RULES:
 
-1. "metadata" contains document-level information: {metadata_fields_list}
-2. "table_rows" contains an array of objects, where each object represents one row from the product table
-3. Each table row object contains: {table_row_fields_list}
-4. Extract values exactly as they appear in the document
-5. Preserve all formatting including dots, dashes, and spaces in numeric fields
+1. The "metadata" object contains document-level fields: {metadata_fields_list}
+2. The "table_rows" array contains objects representing product table rows
+3. Each table row object includes: {table_row_fields_list}
+4. Extract all values exactly as they appear in the document
+5. Preserve formatting such as dots, dashes, and spaces in alphanumeric fields
 6. Preserve all Vietnamese diacritical marks (ă, â, đ, ê, ô, ơ, ư, etc.)
-7. For date fields, convert to dd/mm/yyyy format. If the format is unclear, set to null
-8. For fields that cannot be found or do not exist in the document, set the value to null
-9. DO NOT infer, guess, or make assumptions about missing data
-10. DO NOT confuse "Kho nhận" (company/warehouse name) with "Địa chỉ" (street address)
-11. DO NOT confuse "Số phiếu" (document number) with handwritten page numbers or AR code suffixes
-12. Return ONLY valid JSON with no additional text, explanations, or markdown formatting
+7. Convert dates to dd/mm/yyyy format; if format is uncertain, set to null
+8. For fields that are not found or do not exist in the document, use null
+9. Do not infer, estimate, or assume values for missing data
+10. Do not confuse "Kho nhận" (company/warehouse name) with "Địa chỉ" (street address)
+11. Do not confuse "Số phiếu" (document number) with page numbers or AR code suffixes
+12. Return only valid JSON without additional text, explanations, or markdown formatting
 
-VALIDATION CHECKLIST:
+VERIFICATION CHECKLIST:
 
-Before returning your answer, verify that:
-- "Số phiếu" is extracted from a labeled document number field, not from page numbers or AR codes
-- "Số phiếu" preserves its original format with dots, dashes, or spaces
-- "Kho nhận" contains a company or warehouse name, not a street address
-- "Địa chỉ" contains a street address with location details, or is null if not present
+Before finalizing your response, verify:
+- "Số phiếu" is extracted from a labeled field (not page numbers or AR codes)
+- "Số phiếu" retains its original format with dots, dashes, or spaces
+- "Kho nhận" contains a company or warehouse name (not a street address)
+- "Địa chỉ" contains a street address with details, or is null if absent
 - "Mã AR" includes the complete code with any suffixes
 - All Vietnamese diacritics are correctly preserved
-- Dates are in dd/mm/yyyy format or null
-- Each product table row is a separate object in the "table_rows" array
-- "Số lượng" for each row corresponds to the correct product quantity
-- No values are invented or inferred
+- Dates follow dd/mm/yyyy format or are null
+- Each product table row is represented as a separate object in "table_rows"
+- "Số lượng" for each row matches the correct product quantity
+- No values are fabricated or assumed
 - Output is valid, parseable JSON
 
-Extract data from this document now:"""
+Now extract the data from this document:"""
 
     return prompt

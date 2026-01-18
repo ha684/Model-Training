@@ -23,12 +23,25 @@ from typing import Any, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+CURRENT_DIR = os.getcwd()
+LOCAL_CACHE_DIR = os.path.join(CURRENT_DIR, "local_hf_cache")
+
+if not os.path.exists(LOCAL_CACHE_DIR):
+    os.makedirs(LOCAL_CACHE_DIR)
+    print(f"📁 Created local cache directory: {LOCAL_CACHE_DIR}")
+
+os.environ["HF_HOME"] = LOCAL_CACHE_DIR
+os.environ["HF_DATASETS_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "datasets")
+os.environ["HF_HUB_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "hub")
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
 from unsloth import FastVisionModel
 import mlflow
 import torch.distributed as dist
 from datasets import load_dataset
-from transformers import AutoProcessor
+from transformers import AutoProcessor, EarlyStoppingCallback
 from trl import GRPOConfig, GRPOTrainer
+from transformers.trainer_utils import get_last_checkpoint
 
 from config.fields_config_1 import get_extraction_prompt
 from qwen3_vl.utils import LazyVisionGRPODataset
@@ -43,9 +56,6 @@ from qwen3_vl.reward_functions import (
     format_reward_func,
     content_accuracy_reward_func,
 )
-
-os.environ["NCCL_P2P_DISABLE"] = "1"
-os.environ["NCCL_IB_DISABLE"] = "1"
 
     
 def parse_args():
@@ -169,6 +179,9 @@ def build_grpo_trainer(
         "save_strategy": "steps",
         "temperature": 1.5,
         "min_p": 0.1,
+        "overwrite_output_dir": False,
+        "metric_for_best_model": "reward",
+        "greater_is_better": True,
         **precision_settings,
     }
 
@@ -222,6 +235,11 @@ def build_grpo_trainer(
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
+        callbacks=[
+            EarlyStoppingCallback(
+                early_stopping_patience=5, early_stopping_threshold=0.0
+            )
+        ],
     )
     
     return trainer
@@ -249,6 +267,15 @@ def main():
         print("=" * 70)
         print()
 
+    # --- LOGIC TÌM CHECKPOINT ---
+    last_checkpoint = None
+    if os.path.isdir(args.output_dir):
+        last_checkpoint = get_last_checkpoint(args.output_dir)
+        if last_checkpoint is not None and rank == 0:
+            print(f"♻️  Found checkpoint: {last_checkpoint}")
+            print("🚀 Resuming GRPO training from the latest checkpoint...")
+    # ----------------------------
+
     if rank == 0:
         print("🚀 Initializing model and tokenizer...")
     model, tokenizer = init_model(args, local_rank, load_in_4bit=False)
@@ -267,61 +294,73 @@ def main():
         print("🎯 Starting GRPO training...")
         print()
 
-    trainer_stats = trainer.train()
+    trainer_stats = None
+    interrupted = False
 
-    if rank == 0:
-        print()
-        print("✅ Training completed!")
-        print(f"📊 Training stats: {trainer_stats}")
+    try:
+        # Truyền resume_from_checkpoint vào hàm train
+        trainer_stats = trainer.train(resume_from_checkpoint=last_checkpoint)
 
-        if args.metric_file:
-            final_loss = trainer_stats.training_loss if hasattr(trainer_stats, 'training_loss') else 0.0
-            with open(args.metric_file, "w") as f:
-                json.dump({"training_loss": final_loss}, f)
+    except KeyboardInterrupt:
+        interrupted = True
+        if rank == 0:
+            print("\n" + "!" * 80)
+            print("🛑 Caught KeyboardInterrupt (Ctrl+C)!")
+            print("💾 Saving current state to checkpoint before exiting...")
+            print("!" * 80)
+            
+            # Lưu model và state để resume sau này
+            trainer.save_model(args.output_dir)
+            trainer.save_state() 
+            
+            if args.save_model:
+                print(f"💾 Saving final model wrapper to {args.model_save_path}...")
+                model.save_pretrained(args.model_save_path)
+                tokenizer.save_pretrained(args.model_save_path)
 
-    if args.save_model and rank == 0:
-        print(f"\n💾 Saving model to {args.model_save_path}...")
-        model.save_pretrained(args.model_save_path)
-        tokenizer.save_pretrained(args.model_save_path)
-        print("✅ Model saved successfully!")
+            print("✅ Emergency save completed.")
 
-    # Push to Hub
-    if args.push_to_hub and args.hub_model_id and rank == 0:
-        print(f"🚀 Pushing model to Hugging Face Hub: {args.hub_model_id}...")
-        try:
-            model.push_to_hub(args.hub_model_id, use_temp_dir=True)
-            tokenizer.push_to_hub(args.hub_model_id, use_temp_dir=True)
+    if not interrupted:
+        if rank == 0:
+            print()
+            print("✅ Training completed!")
+            if trainer_stats:
+                print(f"📊 Training stats: {trainer_stats}")
 
-            if args.report_to == "mlflow":
-                mlflow.log_text(
-                    f"https://huggingface.co/{args.hub_model_id}", "hf_model_url.txt"
-                )
+            if args.metric_file and trainer_stats:
+                final_loss = trainer_stats.training_loss if hasattr(trainer_stats, 'training_loss') else 0.0
+                with open(args.metric_file, "w") as f:
+                    json.dump({"training_loss": final_loss}, f)
 
-            print("✅ Push to Hub completed!")
-        except Exception as e:
-            print(f"⚠️ Failed to push to hub: {e}")
+        if args.save_model and rank == 0:
+            print(f"\n💾 Saving model to {args.model_save_path}...")
+            model.save_pretrained(args.model_save_path)
+            tokenizer.save_pretrained(args.model_save_path)
+            print("✅ Model saved successfully!")
+
+        # Push to Hub
+        if args.push_to_hub and args.hub_model_id and rank == 0:
+            print(f"🚀 Pushing model to Hugging Face Hub: {args.hub_model_id}...")
+            try:
+                model.push_to_hub(args.hub_model_id, use_temp_dir=True)
+                tokenizer.push_to_hub(args.hub_model_id, use_temp_dir=True)
+                print("✅ Push to Hub completed!")
+            except Exception as e:
+                print(f"⚠️ Failed to push to hub: {e}")
 
     if args.report_to == "mlflow" and rank == 0:
         print("📤 Uploading extra artifacts to MLflow...")
 
         def upload_and_cleanup():
-            if args.save_model:
-                mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
+            # Chỉ log metrics, không upload artifacts nặng và không xoá local
+            if trainer_stats:
+                 mlflow.log_metrics({"training_loss": trainer_stats.training_loss} if hasattr(trainer_stats, 'training_loss') else {})
 
-            print("✅ Artifacts uploaded successfully!")
-
-            print("🧹 Cleaning up local disk to save space...")
-            try:
-                if os.path.exists(args.output_dir):
-                    shutil.rmtree(args.output_dir)
-                    print(f"   - Deleted: {args.output_dir}")
-
-                if args.save_model and os.path.exists(args.model_save_path):
-                    shutil.rmtree(args.model_save_path)
-                    print(f"   - Deleted: {args.model_save_path}")
-
-            except Exception as e:
-                print(f"⚠️ Error during cleanup: {e}")
+            # if args.save_model:
+            #     mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
+            
+            print("✅ Metrics logged. Artifacts kept locally.")
+            print("💾 Files kept locally. No upload performed.")
 
         if mlflow.active_run():
             print(f"🔗 Attaching to CURRENT active run: {mlflow.active_run().info.run_id}")
@@ -338,11 +377,17 @@ def main():
 
     if rank == 0:
         print("\n" + "=" * 70)
-        print("🎉 All done! Happy training! 🦥⚡")
+        if interrupted:
+            print("🛑 Training Interrupted but Saved LOCALLY. Resume by running script again. 🦥💤")
+        else:
+            print("🎉 All done! Happy training! 🦥⚡")
         print("=" * 70)
 
     if dist.is_initialized():
         dist.destroy_process_group()
+    
+    if interrupted:
+        sys.exit(0)
 
 
 if __name__ == "__main__":

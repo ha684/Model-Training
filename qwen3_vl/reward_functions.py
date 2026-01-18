@@ -88,128 +88,139 @@ def format_reward_func(completions, **kwargs):
     return rewards
 
 def content_accuracy_reward_func(completions, answer, **kwargs):
-    """
-    Check Content Accuracy với logic Unordered Table Rows
-    """
     rewards = []
     ground_truth = answer
+    
     for completion, gt_item in zip(completions, ground_truth):
         score = 0.0
         
-        # --- Parse GT ---
+        # --- 1. Parse Data (Giữ nguyên logic cũ) ---
         gt_data = gt_item
         if isinstance(gt_item, str):
             try: gt_data = json.loads(gt_item)
-            except: rewards.append(0.0); continue
-        
+            except: rewards.append(-5.0); continue # Phạt rất nặng nếu GT lỗi (hiếm) hoặc logic sai
+            
         if isinstance(gt_data, list) and len(gt_data) > 0: gt_data = gt_data[0]
         if not isinstance(gt_data, dict): gt_data = {}
 
-        # --- Parse Pred ---
         pred_data = extract_json_from_text(completion)
         if pred_data is None:
-            rewards.append(-1.0); continue
+            rewards.append(-5.0); continue # Phạt nặng nếu không ra JSON
             
         if isinstance(pred_data, list) and len(pred_data) > 0: pred_data = pred_data[0]
         if not isinstance(pred_data, dict): 
-            rewards.append(-1.0); continue
+            rewards.append(-5.0); continue
 
-        # ----------------------------------------------------------------------
-        # 1. COMPARE METADATA (Giữ nguyên logic cũ)
-        # ----------------------------------------------------------------------
+        # ======================================================================
+        # 2. METADATA SCORING (STRICT MODE)
+        # ======================================================================
         gt_meta = gt_data.get("metadata", {})
         pred_meta = pred_data.get("metadata", {})
         
-        if isinstance(gt_meta, list) and len(gt_meta) > 0: gt_meta = gt_meta[0]
-        if isinstance(pred_meta, list) and len(pred_meta) > 0: pred_meta = pred_meta[0]
+        # Flatten list nếu cần
+        if isinstance(gt_meta, list): gt_meta = gt_meta[0] if gt_meta else {}
+        if isinstance(pred_meta, list): pred_meta = pred_meta[0] if pred_meta else {}
 
-        if isinstance(gt_meta, dict) and isinstance(pred_meta, dict):
-            for k, g_v in gt_meta.items():
-                p_v = pred_meta.get(k)
-                match_score = smart_compare(k, p_v, g_v)
-                if match_score == 1.0: score += 2.0
-                elif match_score > 0.8: score += 1.5
-                else:
-                    if normalize_text(g_v) is None and normalize_text(p_v) is None: score += 0.5
-                    elif normalize_text(p_v) is not None: score -= 0.5
+        # Duyệt qua tất cả keys trong GT Metadata
+        for k, g_v in gt_meta.items():
+            p_v = pred_meta.get(k)
+            
+            # Logic so sánh
+            match_score = smart_compare(k, p_v, g_v)
+            
+            if match_score == 1.0:
+                score += 2.0  # Thưởng: Extract chuẩn tuyệt đối
+            elif match_score > 0.85:
+                score += 1.0  # Thưởng: Extract chấp nhận được (Fuzzy)
+            else:
+                # PHẠT: Nếu field này có trong GT mà model extract sai hoặc null
+                # Chỉ phạt nếu GT có dữ liệu thực sự
+                if normalize_text(g_v) is not None:
+                     score -= 2.0 # Phạt nặng vì sai thông tin Metadata
+        
+        # Phạt hallucination: Model bịa ra field không có trong GT
+        for k, p_v in pred_meta.items():
+            if k not in gt_meta and normalize_text(p_v) is not None:
+                score -= 1.0 # Phạt nhẹ tội bịa field thừa
 
-        # ----------------------------------------------------------------------
-        # 2. COMPARE TABLE ROWS (UPDATED: UNORDERED MATCHING)
-        # ----------------------------------------------------------------------
+        # ======================================================================
+        # 3. TABLE ROWS SCORING (HIGH PENALTY MODE)
+        # ======================================================================
         gt_rows = gt_data.get("table_rows", [])
         pred_rows = pred_data.get("table_rows", [])
         
         if not isinstance(gt_rows, list): gt_rows = []
         if not isinstance(pred_rows, list): pred_rows = []
 
-        # Tạo một bản sao (copy) danh sách pred_rows để quản lý các dòng đã match
-        # Mục đích: Mỗi dòng pred chỉ được match với 1 dòng GT
-        available_preds = pred_rows.copy()
+        # Phạt chênh lệch số dòng (Missed Detection hoặc Hallucination)
+        # Ví dụ: GT 5 dòng, Pred 3 dòng -> Phạt 2 * 2.0 = -4.0
+        row_diff = abs(len(gt_rows) - len(pred_rows))
+        score -= (row_diff * 2.0) 
 
-        # Phạt lệch số lượng dòng
-        score -= (abs(len(gt_rows) - len(pred_rows)) * 0.5)
-
-        for g_row in gt_rows:
-            best_match_idx = -1
-            best_match_score = 0.0 # Điểm match tối thiểu để chấp nhận
-
-            # Tìm dòng tương ứng trong available_preds
-            # Key chính để tìm là "Mã FG"
-            g_fg = normalize_text(g_row.get("Mã FG"))
+        # Để chấm điểm chính xác, ta cần mapping 1-1 giữa Pred và GT
+        # Chiến thuật: Duyệt Pred để xem nó đúng hay sai (vì task extract cần check output)
+        
+        # Copy GT rows để đánh dấu những dòng đã được match
+        available_gt_rows = gt_rows.copy()
+        
+        for p_row in pred_rows:
+            if not isinstance(p_row, dict): continue
             
-            # --- Chiến thuật tìm kiếm ---
-            # Duyệt qua các dòng Pred còn lại để tìm dòng khớp Mã FG
-            found_candidate_indices = []
+            p_fg = normalize_text(p_row.get("Mã FG"))
+            p_qty = normalize_number_string(p_row.get("Số lượng"))
             
-            for idx, p_row in enumerate(available_preds):
-                if not isinstance(p_row, dict): continue
-                p_fg = normalize_text(p_row.get("Mã FG"))
+            # Tìm dòng match tốt nhất trong GT còn lại
+            matched_idx = -1
+            
+            # Ưu tiên 1: Match đúng Mã FG
+            candidates = []
+            for idx, g_row in enumerate(available_gt_rows):
+                if normalize_text(g_row.get("Mã FG")) == p_fg:
+                    candidates.append(idx)
+            
+            # Nếu có nhiều dòng cùng mã FG (ít gặp nhưng có thể), check tiếp số lượng
+            if len(candidates) == 1:
+                matched_idx = candidates[0]
+            elif len(candidates) > 1:
+                # Chọn dòng có số lượng khớp
+                best_sub_match = -1
+                for c_idx in candidates:
+                    g_qty_check = normalize_number_string(available_gt_rows[c_idx].get("Số lượng"))
+                    if g_qty_check == p_qty:
+                        best_sub_match = c_idx
+                        break
+                matched_idx = best_sub_match if best_sub_match != -1 else candidates[0]
+
+            # --- CHẤM ĐIỂM DÒNG ---
+            if matched_idx != -1:
+                # TÌM THẤY MÃ FG TRONG GT -> Check tiếp Số lượng
+                g_target = available_gt_rows[matched_idx]
                 
-                # Check Mã FG trước
-                if p_fg == g_fg and g_fg is not None:
-                    found_candidate_indices.append(idx)
-            
-            # Nếu tìm thấy các dòng khớp Mã FG, chọn dòng có Số lượng khớp nhất (nếu có duplicate mã)
-            target_idx = -1
-            
-            if len(found_candidate_indices) > 0:
-                # Nếu chỉ có 1 dòng khớp mã -> Lấy luôn
-                if len(found_candidate_indices) == 1:
-                    target_idx = found_candidate_indices[0]
+                # 1. Mã FG Đúng (Base reward)
+                score += 2.0 
+                
+                # 2. Check Số Lượng (CRITICAL)
+                g_qty_target = normalize_number_string(g_target.get("Số lượng"))
+                
+                if p_qty == g_qty_target:
+                    score += 3.0  # Thưởng lớn: Đúng cả Mã và Số lượng
                 else:
-                    # Nếu có nhiều dòng trùng mã FG, so tiếp Số lượng để chọn dòng đúng nhất
-                    g_qty = normalize_number_string(g_row.get("Số lượng"))
-                    for idx in found_candidate_indices:
-                        p_qty = normalize_number_string(available_preds[idx].get("Số lượng"))
-                        if p_qty == g_qty:
-                            target_idx = idx
-                            break
-                    # Nếu vẫn không khớp số lượng, lấy thằng đầu tiên trùng mã
-                    if target_idx == -1: target_idx = found_candidate_indices[0]
-            
-            # --- Chấm điểm dựa trên dòng tìm được ---
-            if target_idx != -1:
-                # Tìm thấy cặp tương ứng -> Chấm điểm
-                p_row = available_preds[target_idx]
+                    score -= 5.0  # PHẠT RẤT NẶNG: Đúng mã nhưng sai số lượng (Nguy hiểm)
                 
-                # Điểm cho Mã FG (chắc chắn đúng mới vào đây)
-                score += 3.0 
+                # 3. Check ĐVT (Optional - Less important)
+                # Chỉ thưởng, không phạt
+                p_unit = normalize_text(p_row.get("Đvt"))
+                g_unit = normalize_text(g_target.get("Đvt"))
+                if smart_compare("Đvt", p_unit, g_unit) > 0.8:
+                    score += 0.5
                 
-                # Điểm cho Số lượng
-                sl_score = smart_compare("Số lượng", p_row.get("Số lượng"), g_row.get("Số lượng"))
-                if sl_score == 1.0: score += 2.0
+                # Xóa khỏi available để không match lại
+                available_gt_rows.pop(matched_idx)
                 
-                # Điểm cho ĐVT
-                dvt_score = smart_compare("Đvt", p_row.get("Đvt"), g_row.get("Đvt"))
-                if dvt_score > 0.8: score += 1.0
-
-                # Xóa dòng đã dùng khỏi danh sách để không match lại lần sau
-                available_preds.pop(target_idx)
-            
             else:
-                # Không tìm thấy dòng nào có Mã FG khớp -> Không có điểm dòng này
-                # Có thể thêm phạt nhẹ nếu muốn strict hơn
-                pass
+                # KHÔNG TÌM THẤY MÃ FG (Hallucination)
+                # Model bịa ra một dòng mã hàng không có trong chứng từ
+                score -= 5.0 
 
         rewards.append(score)
         

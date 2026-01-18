@@ -1,3 +1,4 @@
+# config/fields_config.py
 # -*- coding: utf-8 -*-
 """
 Configuration file for data extraction fields and prompts.
@@ -10,8 +11,7 @@ DEFAULT_FIELDS = [
     "Ngày xuất(dd/mm/yyyy)",
     "Mã FG",
     "Đvt",
-    "Số lượng(Thùng)",
-    "Số lượng(Pcs)",
+    "Số lượng",
     "Kho nhận",
     "Địa chỉ",
     "Mã AR",
@@ -19,11 +19,11 @@ DEFAULT_FIELDS = [
 
 METADATA_FIELDS = [
     "Số phiếu",
-    "Ngày chứng từ(dd/mm/yyyy)",
-    "Ngày xuất(dd/mm/yyyy)",
     "Kho nhận",
     "Địa chỉ",
     "Mã AR",
+    "Ngày chứng từ(dd/mm/yyyy)",
+    "Ngày xuất(dd/mm/yyyy)",
 ]
 
 TABLE_ROW_FIELDS = [f for f in DEFAULT_FIELDS if f not in METADATA_FIELDS]

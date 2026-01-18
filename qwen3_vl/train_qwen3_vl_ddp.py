@@ -2,26 +2,33 @@
 #!/usr/bin/env python3
 """
 Fine-tune Qwen3-VL Vision Language Model with Multi-GPU support using Supervised Fine-Tuning (SFT)
-Usage:
-    # Single GPU
-    python train_qwen3_vl_ddp.py
-
-    # Multi-GPU (2 GPUs)
-    torchrun --nproc_per_node=2 train_qwen3_vl_ddp.py
-
-    # Multi-GPU (4 GPUs) with custom settings
-    torchrun --nproc_per_node=4 train_qwen3_vl_ddp.py --batch_size 1 --epochs 3
 """
-
 import argparse
 import os
 import sys
+import shutil
+import signal
 from pathlib import Path
 from typing import Any, Tuple
 
+# os.environ["NCCL_P2P_DISABLE"] = "1"
+# os.environ["NCCL_IB_DISABLE"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,2"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+os.environ["MLFLOW_TRACKING_USERNAME"]="robotpro682004"
+os.environ["MLFLOW_TRACKING_PASSWORD"]="59d3b474fda55ef9e051969b30b778bc42763e2d"
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import shutil
+CURRENT_DIR = os.getcwd()
+LOCAL_CACHE_DIR = os.path.join(CURRENT_DIR, "local_hf_cache")
+
+if not os.path.exists(LOCAL_CACHE_DIR):
+    os.makedirs(LOCAL_CACHE_DIR)
+    print(f"📁 Created local cache directory: {LOCAL_CACHE_DIR}")
+
+os.environ["HF_HOME"] = LOCAL_CACHE_DIR
+os.environ["HF_DATASETS_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "datasets")
+os.environ["HF_HUB_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "hub")
 
 from unsloth import FastVisionModel
 from unsloth.trainer import UnslothVisionDataCollator
@@ -29,6 +36,7 @@ import mlflow
 import torch.distributed as dist
 from datasets import load_dataset
 from transformers import EarlyStoppingCallback
+from transformers.trainer_utils import get_last_checkpoint
 from trl import SFTConfig, SFTTrainer
 
 from config.fields_config_1 import get_extraction_prompt
@@ -40,9 +48,6 @@ from qwen3_vl.training_utils import (
     setup_mlflow,
 )
 from qwen3_vl.utils import LazyVisionDataset
-
-os.environ["NCCL_P2P_DISABLE"] = "1"
-os.environ["NCCL_IB_DISABLE"] = "1"
 
 
 def parse_args():
@@ -62,8 +67,10 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, An
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
-    train_dataset = load_dataset(args.dataset_name, split="train", cache_dir=args.dataset_cache_dir)
-    eval_dataset = load_dataset(args.dataset_name, split="test", cache_dir=args.dataset_cache_dir)
+    local_cache = os.environ["HF_DATASETS_CACHE"]
+    
+    train_dataset = load_dataset(args.dataset_name, split="train", cache_dir=local_cache)
+    eval_dataset = load_dataset(args.dataset_name, split="test", cache_dir=local_cache)
 
     if local_rank == 0:
         print(f"✅ Found {len(train_dataset)} training samples")
@@ -116,6 +123,7 @@ def build_trainer(
         "greater_is_better": False,
         "save_total_limit": 1,
         "run_name": args.mlflow_run_name,
+        "overwrite_output_dir": False, 
         **precision_settings,
     }
 
@@ -141,19 +149,20 @@ def build_trainer(
         model, args, effective_batch
     )
 
-    print("\n📊 Training configuration:")
-    print(f"   - World size (GPUs): {world_size}")
-    print(f"   - Precision: {precision_mode}")
-    print(f"   - Per device batch size: {args.batch_size}")
-    print(f"   - Gradient accumulation: {args.grad_accum}")
-    print(f"   - Effective batch size: {effective_batch}")
-    print(f"   - Learning rate: {args.learning_rate}")
-    if args.max_steps > 0:
-        print(f"   - Max steps: {args.max_steps}")
-    else:
-        print(f"   - Epochs: {args.epochs}")
-    print(f"   - Max sequence length: {args.max_seq_length}")
-    # compute_metrics_fn = partial(compute_metrics_cer, tokenizer=tokenizer)
+    if dist.get_rank() == 0:
+        print("\n📊 Training configuration:")
+        print(f"   - World size (GPUs): {world_size}")
+        print(f"   - Precision: {precision_mode}")
+        print(f"   - Per device batch size: {args.batch_size}")
+        print(f"   - Gradient accumulation: {args.grad_accum}")
+        print(f"   - Effective batch size: {effective_batch}")
+        print(f"   - Learning rate: {args.learning_rate}")
+        if args.max_steps > 0:
+            print(f"   - Max steps: {args.max_steps}")
+        else:
+            print(f"   - Epochs: {args.epochs}")
+        print(f"   - Max sequence length: {args.max_seq_length}")
+
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
@@ -161,7 +170,6 @@ def build_trainer(
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         args=training_args,
-        # compute_metrics=compute_metrics_fn,
         callbacks=[
             EarlyStoppingCallback(
                 early_stopping_patience=3, early_stopping_threshold=1e-4
@@ -175,8 +183,7 @@ def build_trainer(
 
 def main():
     args = parse_args()
-    if args.hf_token:
-        os.environ["HF_TOKEN"] = args.hf_token
+
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     rank = int(os.environ.get("RANK", 0))
@@ -191,8 +198,18 @@ def main():
         print(f"🎯 Model: {args.model_name}")
         print(f"📦 Dataset: {args.dataset_name}")
         print(f"📂 Output directory: {args.output_dir}")
+        print(f"💾 Local Cache: {os.environ['HF_HOME']}") 
         print("=" * 70)
         print()
+
+    # --- LOGIC TÌM CHECKPOINT ---
+    last_checkpoint = None
+    if os.path.isdir(args.output_dir):
+        last_checkpoint = get_last_checkpoint(args.output_dir)
+        if last_checkpoint is not None and rank == 0:
+            print(f"♻️  Found checkpoint: {last_checkpoint}")
+            print("🚀 Resuming training from the latest checkpoint...")
+    # ----------------------------
 
     if rank == 0:
         print("🚀 Initializing model and tokenizer...")
@@ -215,83 +232,102 @@ def main():
 
     FastVisionModel.for_training(model)
 
+    trainer_stats = None
+    interrupted = False
+
     try:
-        from unsloth import unsloth_train
-
-        trainer_stats = unsloth_train(trainer)
-    except ImportError:
-        print("⚠️  unsloth not available. Using trl's trainer.")
-        trainer_stats = trainer.train()
-
-    if rank == 0:
-        trainer.args.report_to = []
-
-    metrics = trainer.evaluate()
-
-    if rank == 0:
-        final_eval_loss = metrics.get("eval_loss", float("inf"))
-
-        print(f"📉 Final Eval Loss: {final_eval_loss}")
-
-        if args.metric_file:
-            import json
-
-            with open(args.metric_file, "w") as f:
-                json.dump({"eval_loss": final_eval_loss}, f)
-
-        print()
-        print("✅ Training completed!")
-        print(f"📊 Training stats: {trainer_stats}")
-
-    if args.save_model and rank == 0:
-        print(f"\n💾 Saving model to {args.model_save_path}...")
-        model.save_pretrained(args.model_save_path)
-        tokenizer.save_pretrained(args.model_save_path)
-        print("✅ Model saved successfully!")
-
-    if args.push_to_hub and args.hub_model_id and rank == 0:
-        print(f"🚀 Pushing model to Hugging Face Hub: {args.hub_model_id}...")
         try:
-            model.push_to_hub(args.hub_model_id, use_temp_dir=True)
-            tokenizer.push_to_hub(args.hub_model_id, use_temp_dir=True)
+            from unsloth import unsloth_train
+            trainer_stats = trainer.train(resume_from_checkpoint=last_checkpoint)
+        except ImportError:
+            if rank == 0:
+                print("⚠️  unsloth not available or failed. Using trl's trainer.")
+            trainer_stats = trainer.train(resume_from_checkpoint=last_checkpoint)
 
-            if args.report_to == "mlflow":
-                mlflow.log_text(
-                    f"https://huggingface.co/{args.hub_model_id}", "hf_model_url.txt"
-                )
+    except KeyboardInterrupt:
+        interrupted = True
+        if rank == 0:
+            print("\n" + "!" * 80)
+            print("🛑 Caught KeyboardInterrupt (Ctrl+C)!")
+            print("💾 Saving current state to checkpoint before exiting...")
+            print("!" * 80)
+            
+            # Lưu model và state để resume sau này
+            trainer.save_model(args.output_dir)
+            trainer.save_state() 
+            
+            if args.save_model:
+                print(f"💾 Saving final model wrapper to {args.model_save_path}...")
+                model.save_pretrained(args.model_save_path)
+                tokenizer.save_pretrained(args.model_save_path)
 
-            print("✅ Push to Hub completed!")
-        except Exception as e:
-            print(f"⚠️ Failed to push to hub: {e}")
+            print("✅ Emergency save completed.")
 
+    if not interrupted:
+        if rank == 0:
+            trainer.args.report_to = []
+
+        metrics = trainer.evaluate()
+
+        if rank == 0:
+            final_eval_loss = metrics.get("eval_loss", float("inf"))
+            print(f"📉 Final Eval Loss: {final_eval_loss}")
+
+            if args.metric_file:
+                import json
+                with open(args.metric_file, "w") as f:
+                    json.dump({"eval_loss": final_eval_loss}, f)
+
+            print()
+            print("✅ Training completed!")
+            if trainer_stats:
+                print(f"📊 Training stats: {trainer_stats}")
+
+        if args.save_model and rank == 0:
+            print(f"\n💾 Saving model to {args.model_save_path}...")
+            model.save_pretrained(args.model_save_path)
+            tokenizer.save_pretrained(args.model_save_path)
+            print("✅ Model saved successfully!")
+
+        if args.push_to_hub and args.hub_model_id and rank == 0:
+            print(f"🚀 Pushing model to Hugging Face Hub: {args.hub_model_id}...")
+            try:
+                model.push_to_hub(args.hub_model_id, use_temp_dir=True)
+                tokenizer.push_to_hub(args.hub_model_id, use_temp_dir=True)
+                print("✅ Push to Hub completed!")
+            except Exception as e:
+                print(f"⚠️ Failed to push to hub: {e}")
+
+    # --- PHẦN XỬ LÝ MLFLOW (ĐÃ SỬA: CHỈ LOG METRICS, KHÔNG LOG ARTIFACTS, KHÔNG XÓA LOCAL) ---
     if args.report_to == "mlflow" and rank == 0:
-        print("📤 Uploading extra artifacts to MLflow...")
+        print("📝 Logging final metrics to MLflow...")
 
         def upload_and_cleanup():
-            if "metrics" in locals():
+            # 1. Chỉ log metrics (số liệu)
+            if 'metrics' in locals():
                 print("📊 Logging eval metrics directly to run...")
                 mlflow.log_metrics(metrics)
+            
+            # 2. DISABLED: Không upload artifacts (file model nặng)
+            # if args.save_model and os.path.exists(args.model_save_path):
+            #     mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
+            # elif os.path.exists(args.output_dir) and interrupted:
+            #      mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints_interrupted")
+            # print("✅ Artifacts uploaded successfully!")
 
-            if args.save_model:
-                mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
-
-            # if os.path.exists(args.output_dir):
-            #     mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints")
-
-            print("✅ Artifacts uploaded successfully!")
-
-            print("🧹 Cleaning up local disk to save space...")
-            try:
-                if os.path.exists(args.output_dir):
-                    shutil.rmtree(args.output_dir)
-                    print(f"   - Deleted: {args.output_dir}")
-
-                if args.save_model and os.path.exists(args.model_save_path):
-                    shutil.rmtree(args.model_save_path)
-                    print(f"   - Deleted: {args.model_save_path}")
-
-            except Exception as e:
-                print(f"⚠️ Error during cleanup: {e}")
+            # 3. DISABLED: Không xóa file local (để giữ lại resume hoặc dùng sau này)
+            # print("🧹 Cleaning up local disk to save space...")
+            # try:
+            #     if not interrupted and os.path.exists(args.output_dir):
+            #         shutil.rmtree(args.output_dir)
+            #         print(f"   - Deleted: {args.output_dir}")
+            #     if args.save_model and os.path.exists(args.model_save_path):
+            #         shutil.rmtree(args.model_save_path)
+            #         print(f"   - Deleted: {args.model_save_path}")
+            # except Exception as e:
+            #     print(f"⚠️ Error during cleanup: {e}")
+            
+            print("💾 Files kept locally. No upload performed.")
 
         if mlflow.active_run():
             print(
@@ -306,15 +342,21 @@ def main():
                 with mlflow.start_run(run_id=last_run.info.run_id):
                     upload_and_cleanup()
             else:
-                print("⚠️ Could not find any MLflow run to upload artifacts.")
+                print("⚠️ Could not find any MLflow run to log metrics.")
 
     if rank == 0:
         print("\n" + "=" * 70)
-        print("🎉 All done! Happy training! 🦥⚡")
+        if interrupted:
+            print("🛑 Training Interrupted but Saved LOCALLY. Resume by running script again. 🦥💤")
+        else:
+            print("🎉 All done! Happy training! 🦥⚡")
         print("=" * 70)
 
     if dist.is_initialized():
         dist.destroy_process_group()
+    
+    if interrupted:
+        sys.exit(0)
 
 
 if __name__ == "__main__":
