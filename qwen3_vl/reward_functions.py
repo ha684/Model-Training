@@ -106,6 +106,26 @@ def check_field_match(key, pred_val, gt_val):
     # --- DEFAULT: EXACT MATCH ---
     return 1.0 if p == g else 0.0
 
+def is_float_match(val1, val2):
+    """
+    So sánh 2 giá trị dưới dạng số thực (float).
+    Chấp nhận: 12 == 12.0 == 12.00
+    """
+    if val1 is None or val2 is None: return False
+    try:
+        # Xóa dấu phẩy ngăn cách nghìn (ví dụ 1,200.5 -> 1200.5)
+        s1 = str(val1).replace(",", "").strip()
+        s2 = str(val2).replace(",", "").strip()
+        
+        f1 = float(s1)
+        f2 = float(s2)
+        
+        # So sánh với sai số cực nhỏ (epsilon)
+        return abs(f1 - f2) < 0.01
+    except:
+        # Nếu không convert được sang số (ví dụ model gen ra text rác), trả về False
+        return False
+    
 # ==============================================================================
 # 2. REWARD FUNCTIONS (KEEPING "NO ESCAPE" STRATEGY)
 # ==============================================================================
@@ -133,11 +153,11 @@ def content_accuracy_reward_func(completions, answer, **kwargs):
     for completion, gt_item in zip(completions, answer):
         score = 0.0
         
-        # --- Parse Data ---
+        # --- Parse Data (Giữ nguyên) ---
         gt_data = gt_item
         if isinstance(gt_item, str):
             try: gt_data = json.loads(gt_item)
-            except: rewards.append(-5.0); continue 
+            except: rewards.append(-5.0); continue
             
         if isinstance(gt_data, list) and len(gt_data) > 0: gt_data = gt_data[0]
         if not isinstance(gt_data, dict): gt_data = {}
@@ -149,7 +169,7 @@ def content_accuracy_reward_func(completions, answer, **kwargs):
         if not isinstance(pred_data, dict): rewards.append(-5.0); continue
 
         # ======================================================================
-        # 1. METADATA SCORING
+        # 1. METADATA SCORING (Giữ nguyên code cũ đã tốt)
         # ======================================================================
         gt_meta = gt_data.get("metadata", {})
         pred_meta = pred_data.get("metadata", {})
@@ -157,27 +177,21 @@ def content_accuracy_reward_func(completions, answer, **kwargs):
         if isinstance(gt_meta, list): gt_meta = gt_meta[0] if gt_meta else {}
         if isinstance(pred_meta, list): pred_meta = pred_meta[0] if pred_meta else {}
 
-        # Check fields exist in GT
         for k, g_v in gt_meta.items():
             if normalize_text(g_v) is None: continue
-            
             p_v = pred_meta.get(k)
-            match_val = check_field_match(k, p_v, g_v)
+            match_val = check_field_match(k, p_v, g_v) # Hàm này đã chuẩn logic Date/AR/Số phiếu
             
-            if match_val == 1.0:
-                score += 2.0 
-            elif match_val > 0.85:
-                score += 1.0 
-            else:
-                score -= 2.0 # Phạt sai Metadata
+            if match_val == 1.0: score += 2.0 
+            elif match_val > 0.85: score += 1.0 
+            else: score -= 2.0 
 
-        # Check Hallucination Metadata
         for k, p_v in pred_meta.items():
             if k not in gt_meta and normalize_text(p_v) is not None:
                 score -= 1.0
 
         # ======================================================================
-        # 2. TABLE ROWS SCORING
+        # 2. TABLE ROWS SCORING (CẬP NHẬT LOGIC FLOAT)
         # ======================================================================
         gt_rows = gt_data.get("table_rows", [])
         pred_rows = pred_data.get("table_rows", [])
@@ -187,48 +201,98 @@ def content_accuracy_reward_func(completions, answer, **kwargs):
 
         matched_gt_indices = set()
         
-        # Check Pred vs GT
+        # --- BƯỚC 1: CHECK PRED vs GT ---
         for p_row in pred_rows:
             if not isinstance(p_row, dict): continue
             
             p_fg = normalize_text(p_row.get("Mã FG"))
-            p_qty = normalize_number_string(p_row.get("Số lượng"))
+            p_qty_raw = p_row.get("Số lượng") # Lấy giá trị thô, chưa normalize string
             
-            # Match Logic: Tìm dòng GT có cùng Mã FG
             best_match_idx = -1
             found_match = False
             
+            # 1. Lọc ra các dòng GT có cùng Mã FG
             candidates = [i for i, r in enumerate(gt_rows) 
                           if normalize_text(r.get("Mã FG")) == p_fg 
                           and i not in matched_gt_indices]
 
             if candidates:
                 best_match_idx = candidates[0] 
-                # Nếu nhiều candidate, tìm cái khớp số lượng
-                for idx in candidates:
-                    if normalize_number_string(gt_rows[idx].get("Số lượng")) == p_qty:
-                        best_match_idx = idx
-                        break
+                
+                # 2. Nếu có nhiều dòng cùng Mã FG, dùng Số Lượng (Float) để chọn dòng đúng nhất
+                if len(candidates) > 1:
+                    for idx in candidates:
+                        g_qty_raw = gt_rows[idx].get("Số lượng")
+                        # Dùng hàm so sánh float mới
+                        if is_float_match(p_qty_raw, g_qty_raw):
+                            best_match_idx = idx
+                            break
+                
                 found_match = True
                 matched_gt_indices.add(best_match_idx)
 
+            # 3. Chấm điểm
             if found_match:
-                # Check Số Lượng
+                # Đã khớp Mã FG, giờ kiểm tra Số lượng để thưởng/phạt
                 g_target = gt_rows[best_match_idx]
-                g_qty_target = normalize_number_string(g_target.get("Số lượng"))
+                g_qty_raw = g_target.get("Số lượng")
 
-                if p_qty == g_qty_target:
-                    score += 5.0 
+                # SO SÁNH FLOAT LẦN CUỐI ĐỂ TÍNH ĐIỂM
+                if is_float_match(p_qty_raw, g_qty_raw):
+                    score += 5.0  # THƯỞNG: Đúng Mã + Đúng Số lượng (bất kể int/float)
                 else:
-                    score -= 5.0 # Phạt Đúng Mã - Sai Số Lượng
+                    score -= 5.0  # PHẠT: Đúng Mã + Sai Số lượng
             else:
-                score -= 5.0 # Phạt Hallucination Table Row
+                score -= 5.0 # Phạt Hallucination (Mã FG không tồn tại)
 
-        # Check Missing GT Rows
+        # --- BƯỚC 2: CHECK MISSING ---
         missed_count = len(gt_rows) - len(matched_gt_indices)
         if missed_count > 0:
-            score -= (missed_count * 5.0) # Phạt Missing
+            score -= (missed_count * 5.0)
 
+        rewards.append(score)
+        
+    return rewards
+
+def length_penalty_reward_func(completions, answer, **kwargs):
+    """
+    Phạt nếu độ dài output chênh lệch quá nhiều so với Ground Truth.
+    Giúp chống việc sinh lặp vô tận hoặc output quá ngắn.
+    """
+    rewards = []
+    
+    for completion, gt_item in zip(completions, answer):
+        # 1. Lấy độ dài Ground Truth (Clean whitespace để so sánh lượng thông tin)
+        # GT có thể là string hoặc dict, cần convert về string
+        gt_str = gt_item if isinstance(gt_item, str) else json.dumps(gt_item)
+        gt_len = len(gt_str.replace(" ", "").replace("\n", ""))
+        
+        # 2. Lấy độ dài Prediction
+        pred_len = len(completion.replace(" ", "").replace("\n", ""))
+        
+        # Tránh chia cho 0
+        if gt_len == 0: gt_len = 1
+        
+        ratio = pred_len / gt_len
+        score = 0.0
+        
+        # --- LOGIC PHẠT ---
+        if ratio > 2.0:
+            # Dài gấp đôi GT -> Chắc chắn bị lặp hoặc hallucination nặng
+            score = -4.0 
+        elif ratio > 1.5:
+            # Dài hơn 50% -> Hơi thừa
+            score = -2.0
+        elif ratio < 0.5:
+            # Ngắn hơn 1 nửa -> Chắc chắn thiếu thông tin nghiêm trọng
+            score = -4.0
+        elif ratio < 0.7:
+             # Ngắn hơn 30% -> Khả năng thiếu dòng
+            score = -2.0
+        else:
+            # Trong khoảng 0.7 - 1.5 -> Độ dài hợp lý, thưởng nhẹ để khuyến khích
+            score = 0.5
+            
         rewards.append(score)
         
     return rewards

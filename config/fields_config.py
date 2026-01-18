@@ -114,6 +114,10 @@ FIELD DEFINITIONS AND EXTRACTION RULES:
     - Extract the total piece count
     - Relationship: Số lượng(Pcs) = Số lượng(Thùng) × pieces per carton
     - Note: The document may not specify how many pcs are in each thùng (this is OK, just extract what's shown)
+- CRITICAL DATA TYPE:
+  * Extract as a NUMBER (integer or float), NOT as a string
+  * Correct: 168 or 168.5
+  * Wrong: "168" or "168.5"
 
 OUTPUT REQUIREMENTS:
 - Return data in JSON format with the following structure:

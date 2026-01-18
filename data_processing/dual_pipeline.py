@@ -82,14 +82,75 @@ def validate_and_normalize_result(result: dict, metadata_fields: list, table_fie
     return normalized
 
 
+def normalize_value(value):
+    """Normalize value for comparison (handle type differences)."""
+    if value is None:
+        return None
+    
+    # Try to convert to number (for Số lượng field)
+    if isinstance(value, str):
+        # Try to parse as number
+        try:
+            # Remove whitespace
+            value = value.strip()
+            # Try int first
+            if '.' not in value:
+                return int(value)
+            # Then float
+            return float(value)
+        except (ValueError, AttributeError):
+            # Not a number, return as lowercase string
+            return value.lower()
+    
+    # Already a number
+    if isinstance(value, (int, float)):
+        return value
+    
+    # For other types, convert to string and lowercase
+    return str(value).lower()
+
+
+def normalize_result(result: dict) -> dict:
+    """Normalize result for comparison."""
+    normalized = {
+        "metadata": [],
+        "table_rows": []
+    }
+    
+    # Normalize metadata
+    if "metadata" in result:
+        metadata_list = result["metadata"] if isinstance(result["metadata"], list) else [result["metadata"]]
+        for item in metadata_list:
+            normalized_item = {}
+            for key, value in item.items():
+                normalized_item[key] = normalize_value(value)
+            normalized["metadata"].append(normalized_item)
+    
+    # Normalize table rows
+    if "table_rows" in result:
+        rows_list = result["table_rows"] if isinstance(result["table_rows"], list) else [result["table_rows"]]
+        for row in rows_list:
+            normalized_row = {}
+            for key, value in row.items():
+                normalized_row[key] = normalize_value(value)
+            normalized["table_rows"].append(normalized_row)
+    
+    return normalized
+
+
 def results_match(result1: dict, result2: dict) -> bool:
     """
-    Simple comparison: convert to JSON and compare strings.
-    Any difference = mismatch.
+    Compare two extraction results after normalization.
+    Handles type differences (int vs string for numbers).
     """
     try:
-        json1 = json.dumps(result1, sort_keys=True, ensure_ascii=False)
-        json2 = json.dumps(result2, sort_keys=True, ensure_ascii=False)
+        # Normalize both results
+        norm1 = normalize_result(result1)
+        norm2 = normalize_result(result2)
+        
+        # Convert to JSON and compare
+        json1 = json.dumps(norm1, sort_keys=True, ensure_ascii=False)
+        json2 = json.dumps(norm2, sort_keys=True, ensure_ascii=False)
         return json1 == json2
     except:
         return False
