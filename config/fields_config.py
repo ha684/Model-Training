@@ -114,10 +114,6 @@ FIELD DEFINITIONS AND EXTRACTION RULES:
     - Extract the total piece count
     - Relationship: Số lượng(Pcs) = Số lượng(Thùng) × pieces per carton
     - Note: The document may not specify how many pcs are in each thùng (this is OK, just extract what's shown)
-- CRITICAL DATA TYPE:
-  * Extract as a NUMBER (integer or float), NOT as a string
-  * Correct: 168 or 168.5
-  * Wrong: "168" or "168.5"
 
 OUTPUT REQUIREMENTS:
 - Return data in JSON format with the following structure:
@@ -131,6 +127,13 @@ OUTPUT REQUIREMENTS:
     }}
   ]
 }}
+
+CRITICAL DATA TYPE REQUIREMENTS:
+- "Số lượng" MUST be a number (integer or float), NOT a string
+  * Correct: {{"Số lượng": 168}} or {{"Số lượng": 168.5}}
+  * Wrong: {{"Số lượng": "168"}} or {{"Số lượng": "168.5"}}
+- All other fields can be strings or null
+- Dates must be strings in dd/mm/yyyy format
 
 CRITICAL EXTRACTION RULES:
 1. "metadata" contains document-level information: {metadata_fields_list}
