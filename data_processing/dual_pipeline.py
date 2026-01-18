@@ -550,7 +550,8 @@ def run_pipeline(
 
             try:
                 genai.configure(api_key=current_key)
-                model = genai.GenerativeModel("gemini-3-flash-preview")
+                
+                model = genai.GenerativeModel("gemini-3-flash-preview",generation_config=genai.GenerationConfig(temperature=1.0))
 
                 success = process_file(
                     file_path=file_path,

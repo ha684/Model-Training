@@ -55,6 +55,7 @@ from qwen3_vl.training_utils import (
 from qwen3_vl.reward_functions import (
     format_reward_func,
     content_accuracy_reward_func,
+    length_penalty_reward_func,
 )
 
     
@@ -230,6 +231,7 @@ def build_grpo_trainer(
         reward_funcs=[
             format_reward_func,
             content_accuracy_reward_func,
+            length_penalty_reward_func,
         ],
         args=training_args,
         train_dataset=train_dataset,

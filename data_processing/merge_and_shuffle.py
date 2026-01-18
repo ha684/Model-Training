@@ -182,7 +182,6 @@ def get_data_type(source_file: str) -> str:
 # MAPPERS
 # ==========================================
 
-
 def transform_production(batch):
     imgs = []
     for img in batch["image"]:
@@ -191,15 +190,15 @@ def transform_production(batch):
         else:
             imgs.append(img)
 
-    n = len(batch["text"])
+    page_numbers = batch.get("page_number", [1] * len(batch["text"]))
+
     return {
         "image": imgs,
         "text": batch["text"],
         "source_file": batch["source_file"],
-        "page_number": [1] * n,
-        "is_multiturn": [False] * n,
+        "page_number": page_numbers,
+        "is_multiturn": [False] * len(batch["text"]),
     }
-
 
 def transform_production_with_aug(batch):
     """
@@ -212,7 +211,14 @@ def transform_production_with_aug(batch):
     out_pages = []
     out_multiturn = []
 
-    for img, txt, src in zip(batch["image"], batch["text"], batch["source_file"]):
+    page_numbers = batch.get("page_number", [1] * len(batch["text"]))
+
+    for img, txt, src, page in zip(
+        batch["image"], 
+        batch["text"], 
+        batch["source_file"],
+        page_numbers
+    ):
         if img.mode != "RGB":
             original_img = img.convert("RGB")
         else:
@@ -222,7 +228,7 @@ def transform_production_with_aug(batch):
         out_imgs.append(original_img)
         out_texts.append(txt)
         out_sources.append(src)
-        out_pages.append(1)
+        out_pages.append(page)
         out_multiturn.append(False)
 
         # COPY 2: AUGMENTATION 1
@@ -230,7 +236,7 @@ def transform_production_with_aug(batch):
         out_imgs.append(aug_img_1)
         out_texts.append(txt)
         out_sources.append(src)
-        out_pages.append(1)
+        out_pages.append(page)
         out_multiturn.append(False)
 
         # COPY 3: AUGMENTATION 2
@@ -238,7 +244,7 @@ def transform_production_with_aug(batch):
         out_imgs.append(aug_img_2)
         out_texts.append(txt)
         out_sources.append(src)
-        out_pages.append(1)
+        out_pages.append(page)
         out_multiturn.append(False)
 
     return {

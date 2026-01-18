@@ -9,6 +9,8 @@ Optimized with concurrent requests.
 import sys
 from pathlib import Path
 
+
+import re
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import asyncio
 import base64
@@ -24,7 +26,7 @@ from datasets import load_dataset
 from dotenv import load_dotenv
 from PIL import Image
 from tqdm.asyncio import tqdm as atqdm
-
+from difflib import SequenceMatcher
 from config.fields_config import get_extraction_prompt_evaluation
 
 load_dotenv()
@@ -32,10 +34,10 @@ load_dotenv()
 HF_TOKEN = os.getenv("hf_token")
 base_url = os.getenv("base_url", "https://8fad34849342.ngrok-free.app")
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "ha684/qwen3-vl-2b-grpo-V1"
+MODEL_NAME = "ha684/qwen3-vl-8b-V1"
 DATASET_NAME = "ha684/vl-vi-conv-mix-v1.1"
 DATASET_SPLIT = "validation"
-MAX_CONCURRENT_REQUESTS = 3
+MAX_CONCURRENT_REQUESTS = 2
 TIMEOUT = 180
 
 
@@ -104,6 +106,31 @@ async def call_vllm_api_async(
         print(f"API call failed: {e}")
         return None
 
+def is_fuzzy_match(s1: str, s2: str, threshold=0.9) -> bool:
+    """
+    Kiểm tra độ tương đồng giữa 2 chuỗi. 
+    Trả về True nếu độ tương đồng >= threshold (0.9 = 90%).
+    """
+    if s1 is None or s2 is None:
+        return s1 == s2
+    
+    s1 = str(s1).strip().lower()
+    s2 = str(s2).strip().lower()
+    
+    # Nếu khớp hoàn toàn
+    if s1 == s2:
+        return True
+    
+    # Tính tỉ lệ tương đồng (SequenceMatcher)
+    ratio = SequenceMatcher(None, s1, s2).ratio()
+    
+    # Logic bổ sung: Nếu chuỗi này chứa chuỗi kia (tránh lỗi do OCR thêm ký tự rác ở cuối)
+    if s1 in s2 or s2 in s1:
+        # Nếu độ dài chênh lệch không quá lớn (ví dụ không quá 5 ký tự rác)
+        if abs(len(s1) - len(s2)) <= 5:
+            return True
+
+    return ratio >= threshold
 
 def parse_model_output(output: str) -> Dict:
     """Parse model output JSON, handling markdown code blocks."""
@@ -137,27 +164,20 @@ def normalize_value(value: Any) -> Any:
         return float(value)
     return value
 
-
 def normalize_ar_code(value: str) -> str:
     """
-    Normalize AR code for comparison.
-    Extract the AR prefix part (e.g., AR5239) and ignore underscores/suffixes.
-    Examples:
-    - AR5239_141 -> ar5239
-    - AR5239___141 -> ar5239
-    - AR5239 -> ar5239
+    Xử lý đặc thù Mã AR linh hoạt:
+    - Cắt bỏ phần đuôi sau dấu gạch dưới (_) hoặc khoảng trắng ( )
+    - Chấp nhận 1 hay nhiều dấu _, dấu cách đều được xử lý
+    Ví dụ: 
+      'AR1830__141' -> 'AR1830'
+      'AR1830_141'  -> 'AR1830'
+      'AR1830 141'  -> 'AR1830'
     """
-    if value is None:
-        return None
-    
-    normalized = value.strip().lower()
-    
-    # Split by underscore and take the first part (the AR code)
-    if '_' in normalized:
-        ar_part = normalized.split('_')[0]
-        return ar_part
-    
-    return normalized
+    if value is None: return None
+    s = str(value).strip()
+    parts = re.split(r'[_\s]+', s)
+    return parts[0].strip() if parts else value
 
 
 def normalize_so_phieu(value: str) -> str:
@@ -187,7 +207,6 @@ def normalize_dia_chi(value: str) -> str:
         return None
     
     normalized = value.strip().lower()
-    # Remove all spaces for comparison
     normalized = normalized.replace(' ', '')
     return normalized
 
@@ -201,30 +220,43 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
     if isinstance(pred_meta, list):
         pred_meta = pred_meta[0] if pred_meta else {}
 
+    fuzzy_fields = ["Kho nhận", "Địa chỉ"]
+
     for field in gt_meta.keys():
         pred_original = pred_meta.get(field)
         gt_original = gt_meta.get(field)
         
-        # Special handling for different fields
+        correct = False
+        
+        # 1. Xử lý Mã AR
         if field == "Mã AR":
             pred_val = normalize_ar_code(pred_original)
             gt_val = normalize_ar_code(gt_original)
+            correct = (pred_val == gt_val)
+            
+        # 2. Xử lý Số phiếu
         elif field == "Số phiếu":
             pred_val = normalize_so_phieu(pred_original)
             gt_val = normalize_so_phieu(gt_original)
-        elif field == "Địa chỉ":
-            pred_val = normalize_dia_chi(pred_original)
-            gt_val = normalize_dia_chi(gt_original)
+            correct = (pred_val == gt_val)
+            
+        # 3. Xử lý Kho nhận và Địa chỉ (Fuzzy Match)
+        elif field in fuzzy_fields:
+            # Vẫn dùng normalize_dia_chi để xóa bớt khoảng trắng trước khi so sánh mờ
+            p_norm = normalize_dia_chi(pred_original)
+            g_norm = normalize_dia_chi(gt_original)
+            correct = is_fuzzy_match(p_norm, g_norm, threshold=0.85) # Ngưỡng 85% là khá an toàn
+            
+        # 4. Các trường còn lại
         else:
             pred_val = normalize_value(pred_original)
             gt_val = normalize_value(gt_original)
-
-        if gt_val is None and pred_val is None:
-            correct = True
-        elif gt_val is None or pred_val is None:
-            correct = gt_val == pred_val
-        else:
-            correct = pred_val == gt_val
+            if gt_val is None and pred_val is None:
+                correct = True
+            elif gt_val is None or pred_val is None:
+                correct = (gt_val == pred_val)
+            else:
+                correct = (pred_val == gt_val)
 
         results[field] = {
             "correct": correct,
