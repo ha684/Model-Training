@@ -9,6 +9,8 @@ Optimized with concurrent requests.
 import sys
 from pathlib import Path
 
+
+import re
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import asyncio
 import base64
@@ -24,30 +26,46 @@ from datasets import load_dataset
 from dotenv import load_dotenv
 from PIL import Image
 from tqdm.asyncio import tqdm as atqdm
-
-from config.fields_config import get_extraction_prompt
+from difflib import SequenceMatcher
+from config.fields_config import get_extraction_prompt_evaluation
 
 load_dotenv()
 
 HF_TOKEN = os.getenv("hf_token")
-base_url = os.getenv("base_url", "https://a1aacb296bc6.ngrok-free.app")
+base_url = os.getenv("base_url", "https://8fad34849342.ngrok-free.app")
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "ha684/qwen3-vl-2b-V1.3"
-DATASET_NAME = "ha684/senko-V1.1"
+MODEL_NAME = "ha684/qwen3-vl-8b-V1"
+DATASET_NAME = "ha684/vl-vi-conv-mix-v1.1"
 DATASET_SPLIT = "validation"
-MAX_CONCURRENT_REQUESTS = 3
+MAX_CONCURRENT_REQUESTS = 2
 TIMEOUT = 180
 
 
-def image_to_base64(image: Image.Image) -> str:
+def image_to_base64(image) -> str:
     """Convert PIL Image to base64 string."""
-    buffered = BytesIO()
-    image.save(buffered, format="PNG")
-    return base64.b64encode(buffered.getvalue()).decode("utf-8")
+    # Handle case where image might be a dict (from datasets)
+    if isinstance(image, dict):
+        # If it's already a PIL Image wrapped in dict
+        if 'bytes' in image:
+            return base64.b64encode(image['bytes']).decode('utf-8')
+        # Otherwise try to get the actual image
+        image = image.get('image', image)
+    
+    # If it's a PIL Image
+    if isinstance(image, Image.Image):
+        buffered = BytesIO()
+        image.save(buffered, format="PNG")
+        return base64.b64encode(buffered.getvalue()).decode("utf-8")
+    
+    # If it's already bytes
+    if isinstance(image, bytes):
+        return base64.b64encode(image).decode('utf-8')
+    
+    raise ValueError(f"Unsupported image type: {type(image)}")
 
 
 async def call_vllm_api_async(
-    session: aiohttp.ClientSession, image: Image.Image, prompt: str
+    session: aiohttp.ClientSession, image, prompt: str
 ) -> str:
     """Call vLLM API with image and prompt asynchronously."""
     image_base64 = image_to_base64(image)
@@ -88,6 +106,31 @@ async def call_vllm_api_async(
         print(f"API call failed: {e}")
         return None
 
+def is_fuzzy_match(s1: str, s2: str, threshold=0.9) -> bool:
+    """
+    Kiểm tra độ tương đồng giữa 2 chuỗi. 
+    Trả về True nếu độ tương đồng >= threshold (0.9 = 90%).
+    """
+    if s1 is None or s2 is None:
+        return s1 == s2
+    
+    s1 = str(s1).strip().lower()
+    s2 = str(s2).strip().lower()
+    
+    # Nếu khớp hoàn toàn
+    if s1 == s2:
+        return True
+    
+    # Tính tỉ lệ tương đồng (SequenceMatcher)
+    ratio = SequenceMatcher(None, s1, s2).ratio()
+    
+    # Logic bổ sung: Nếu chuỗi này chứa chuỗi kia (tránh lỗi do OCR thêm ký tự rác ở cuối)
+    if s1 in s2 or s2 in s1:
+        # Nếu độ dài chênh lệch không quá lớn (ví dụ không quá 5 ký tự rác)
+        if abs(len(s1) - len(s2)) <= 5:
+            return True
+
+    return ratio >= threshold
 
 def parse_model_output(output: str) -> Dict:
     """Parse model output JSON, handling markdown code blocks."""
@@ -121,27 +164,20 @@ def normalize_value(value: Any) -> Any:
         return float(value)
     return value
 
-
 def normalize_ar_code(value: str) -> str:
     """
-    Normalize AR code for comparison.
-    Extract the AR prefix part (e.g., AR5239) and ignore underscores/suffixes.
-    Examples:
-    - AR5239_141 -> ar5239
-    - AR5239___141 -> ar5239
-    - AR5239 -> ar5239
+    Xử lý đặc thù Mã AR linh hoạt:
+    - Cắt bỏ phần đuôi sau dấu gạch dưới (_) hoặc khoảng trắng ( )
+    - Chấp nhận 1 hay nhiều dấu _, dấu cách đều được xử lý
+    Ví dụ: 
+      'AR1830__141' -> 'AR1830'
+      'AR1830_141'  -> 'AR1830'
+      'AR1830 141'  -> 'AR1830'
     """
-    if value is None:
-        return None
-    
-    normalized = value.strip().lower()
-    
-    # Split by underscore and take the first part (the AR code)
-    if '_' in normalized:
-        ar_part = normalized.split('_')[0]
-        return ar_part
-    
-    return normalized
+    if value is None: return None
+    s = str(value).strip()
+    parts = re.split(r'[_\s]+', s)
+    return parts[0].strip() if parts else value
 
 
 def normalize_so_phieu(value: str) -> str:
@@ -171,7 +207,6 @@ def normalize_dia_chi(value: str) -> str:
         return None
     
     normalized = value.strip().lower()
-    # Remove all spaces for comparison
     normalized = normalized.replace(' ', '')
     return normalized
 
@@ -185,30 +220,43 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
     if isinstance(pred_meta, list):
         pred_meta = pred_meta[0] if pred_meta else {}
 
+    fuzzy_fields = ["Kho nhận", "Địa chỉ"]
+
     for field in gt_meta.keys():
         pred_original = pred_meta.get(field)
         gt_original = gt_meta.get(field)
         
-        # Special handling for different fields
+        correct = False
+        
+        # 1. Xử lý Mã AR
         if field == "Mã AR":
             pred_val = normalize_ar_code(pred_original)
             gt_val = normalize_ar_code(gt_original)
+            correct = (pred_val == gt_val)
+            
+        # 2. Xử lý Số phiếu
         elif field == "Số phiếu":
             pred_val = normalize_so_phieu(pred_original)
             gt_val = normalize_so_phieu(gt_original)
-        elif field == "Địa chỉ":
-            pred_val = normalize_dia_chi(pred_original)
-            gt_val = normalize_dia_chi(gt_original)
+            correct = (pred_val == gt_val)
+            
+        # 3. Xử lý Kho nhận và Địa chỉ (Fuzzy Match)
+        elif field in fuzzy_fields:
+            # Vẫn dùng normalize_dia_chi để xóa bớt khoảng trắng trước khi so sánh mờ
+            p_norm = normalize_dia_chi(pred_original)
+            g_norm = normalize_dia_chi(gt_original)
+            correct = is_fuzzy_match(p_norm, g_norm, threshold=0.85) # Ngưỡng 85% là khá an toàn
+            
+        # 4. Các trường còn lại
         else:
             pred_val = normalize_value(pred_original)
             gt_val = normalize_value(gt_original)
-
-        if gt_val is None and pred_val is None:
-            correct = True
-        elif gt_val is None or pred_val is None:
-            correct = gt_val == pred_val
-        else:
-            correct = pred_val == gt_val
+            if gt_val is None and pred_val is None:
+                correct = True
+            elif gt_val is None or pred_val is None:
+                correct = (gt_val == pred_val)
+            else:
+                correct = (pred_val == gt_val)
 
         results[field] = {
             "correct": correct,
@@ -226,7 +274,7 @@ def compare_table_rows(
     Compare table rows between prediction and ground truth.
     A row is correct if:
     - Mã FG matches exactly (after normalization)
-    - The quantity matches (compare the larger value if both Thùng and Pcs exist)
+    - Số lượng matches exactly
     """
     if not gt_rows:
         return 0, 0, []
@@ -239,12 +287,7 @@ def compare_table_rows(
 
     for gt_row in gt_rows:
         gt_fg = normalize_value(gt_row.get("Mã FG"))
-        gt_qty_thung = normalize_value(gt_row.get("Số lượng(Thùng)"))
-        gt_qty_pcs = normalize_value(gt_row.get("Số lượng(Pcs)"))
-        
-        # Get the larger quantity value from ground truth
-        gt_quantities = [q for q in [gt_qty_thung, gt_qty_pcs] if q is not None]
-        gt_qty = max(gt_quantities) if gt_quantities else None
+        gt_qty = normalize_value(gt_row.get("Số lượng"))
 
         row_detail = {"gt_fg": gt_fg, "match": False, "errors": []}
 
@@ -254,20 +297,14 @@ def compare_table_rows(
             continue
 
         pred_row = pred_by_fg[gt_fg]
-        pred_qty_thung = normalize_value(pred_row.get("Số lượng(Thùng)"))
-        pred_qty_pcs = normalize_value(pred_row.get("Số lượng(Pcs)"))
-        
-        # Get the larger quantity value from prediction
-        pred_quantities = [q for q in [pred_qty_thung, pred_qty_pcs] if q is not None]
-        pred_qty = max(pred_quantities) if pred_quantities else None
+        pred_qty = normalize_value(pred_row.get("Số lượng"))
 
-        # Check if quantities match (comparing the larger values)
+        # Check if quantities match
         qty_match = (gt_qty == pred_qty) if (gt_qty is not None and pred_qty is not None) else False
 
         if not qty_match:
             row_detail["errors"].append(
-                f"Quantity mismatch: pred={pred_qty} (Thùng={pred_row.get('Số lượng(Thùng)')}, Pcs={pred_row.get('Số lượng(Pcs)')}) "
-                f"vs gt={gt_qty} (Thùng={gt_row.get('Số lượng(Thùng)')}, Pcs={gt_row.get('Số lượng(Pcs)')})"
+                f"Quantity mismatch: pred={pred_qty} vs gt={gt_qty}"
             )
 
         if qty_match:
@@ -281,7 +318,7 @@ def compare_table_rows(
 
 async def evaluate_single_async(
     session: aiohttp.ClientSession,
-    image: Image.Image,
+    image,
     ground_truth: str,
     prompt: str,
     source_file: str = None,
@@ -430,7 +467,7 @@ def main():
     print(f"Columns: {dataset.column_names}")
     print(f"Concurrent requests: {MAX_CONCURRENT_REQUESTS}")
 
-    prompt = get_extraction_prompt()
+    prompt = get_extraction_prompt_evaluation()
 
     print("\nStarting evaluation...")
     results = asyncio.run(evaluate_dataset_async(dataset, prompt))

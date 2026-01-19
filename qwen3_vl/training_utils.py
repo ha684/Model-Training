@@ -170,6 +170,29 @@ def parse_common_args(parser: argparse.ArgumentParser = None) -> argparse.Argume
         "--eval_steps", type=int, default=10, help="Evaluation interval"
     )
     parser.add_argument("--dataset_cache_dir", type=str, default=None, help="Custom path to cache datasets")
+
+    parser.add_argument(
+        "--no_merge_and_push",
+        action="store_false",
+        dest="merge_and_push",
+        default=True,
+        help="Disable merging LoRA adapter with base model (default: merge and push merged model)",
+    )
+    parser.add_argument(
+        "--save_method",
+        type=str,
+        choices=["merged_16bit", "gguf"],
+        default="merged_16bit",
+        help="Save method for merged model: merged_16bit (for vLLM/SGLang) or gguf (for Ollama/Llama.cpp)",
+    )
+    parser.add_argument(
+        "--quantization_method",
+        type=str,
+        default="q4_k_m",
+        choices=["q4_k_m", "q8_0", "f16", "q2_k", "q3_k_m", "q5_k_m", "q6_k"],
+        help="Quantization method for GGUF (only used if save_method is gguf)",
+    )
+    
     return parser
 
 
