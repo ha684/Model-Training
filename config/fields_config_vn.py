@@ -7,8 +7,8 @@ Uses slightly different phrasing to catch extraction inconsistencies.
 
 DEFAULT_FIELDS = [
     "Số phiếu",
-    "Ngày chứng từ(dd/mm/yyyy)",
-    "Ngày xuất(dd/mm/yyyy)",
+    "Ngày chứng từ",
+    "Ngày xuất",
     "Mã FG",
     "Đvt",
     "Số lượng",
@@ -22,8 +22,8 @@ METADATA_FIELDS = [
     "Kho nhận",
     "Địa chỉ",
     "Mã AR",
-    "Ngày chứng từ(dd/mm/yyyy)",
-    "Ngày xuất(dd/mm/yyyy)",
+    "Ngày chứng từ",
+    "Ngày xuất",
 ]
 
 TABLE_ROW_FIELDS = [f for f in DEFAULT_FIELDS if f not in METADATA_FIELDS]

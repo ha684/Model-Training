@@ -165,7 +165,6 @@ def metadata_accuracy_reward_func(completions, answer, **kwargs):
             else:
                 score -= 7.0
 
-        # Penalty for hallucinated fields
         for k_p in pred_meta.keys():
             if k_p not in mapped_pred_keys:
                 if normalize_text(pred_meta[k_p]) is not None:

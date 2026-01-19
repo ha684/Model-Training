@@ -2,8 +2,8 @@
 """
 Dual-Pass Data Extraction Pipeline with Validation.
 
-Extracts data twice with different prompts, saves first result to main output,
-and logs mismatches to a separate review log.
+Pass 1: Extract with English field names (fields_config)
+Pass 2: Extract with Vietnamese field names (fields_config_vn) for validation
 
 Usage:
     python data_processing/dual_pipeline.py --input ./data --output ./output/results.json --api-keys ./api_keys.txt
@@ -33,10 +33,10 @@ from config.fields_config import (
     TABLE_ROW_FIELDS,
     get_extraction_prompt,
 )
-from config.fields_config_1 import (
-    METADATA_FIELDS as METADATA_FIELDS_1,
-    TABLE_ROW_FIELDS as TABLE_ROW_FIELDS_1,
-    get_extraction_prompt as get_extraction_prompt_1,
+from config.fields_config_vn import (
+    METADATA_FIELDS as METADATA_FIELDS_VN,
+    TABLE_ROW_FIELDS as TABLE_ROW_FIELDS_VN,
+    get_extraction_prompt as get_extraction_prompt_vn,
 )
 
 logging.basicConfig(
@@ -48,6 +48,49 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+FIELD_MAPPING = {
+    "Số phiếu": "document_number",
+    "Ngày chứng từ(dd/mm/yyyy)": "document_date",
+    "Ngày xuất(dd/mm/yyyy)": "export_date",
+    "Kho nhận": "receiving_warehouse",
+    "Địa chỉ": "address",
+    "Mã AR": "ar_code",
+    
+    "Mã FG": "product_code",
+    "Đvt": "unit",
+    "Số lượng": "quantity",
+}
+
+
+def convert_vn_to_en(result_vn: dict) -> dict:
+    """Convert Vietnamese field names to English field names."""
+    if not result_vn:
+        return result_vn
+    
+    converted = {}
+    
+    if "metadata" in result_vn:
+        metadata_list = result_vn["metadata"] if isinstance(result_vn["metadata"], list) else [result_vn["metadata"]]
+        converted["metadata"] = []
+        for item in metadata_list:
+            converted_item = {
+                FIELD_MAPPING.get(k, k): v
+                for k, v in item.items()
+            }
+            converted["metadata"].append(converted_item)
+    
+    if "table_rows" in result_vn:
+        rows_list = result_vn["table_rows"] if isinstance(result_vn["table_rows"], list) else [result_vn["table_rows"]]
+        converted["table_rows"] = []
+        for row in rows_list:
+            converted_row = {
+                FIELD_MAPPING.get(k, k): v
+                for k, v in row.items()
+            }
+            converted["table_rows"].append(converted_row)
+    
+    return converted
 
 
 def validate_and_normalize_result(result: dict, metadata_fields: list, table_fields: list) -> dict:
@@ -87,7 +130,7 @@ def normalize_value(value):
     if value is None:
         return None
     
-    # Try to convert to number (for Số lượng field)
+    # Try to convert to number (for quantity field)
     if isinstance(value, str):
         # Try to parse as number
         try:
@@ -232,8 +275,8 @@ def extract_from_image(
 def process_file(
     file_path: str,
     model: genai.GenerativeModel,
-    prompt1: str,
-    prompt2: str,
+    prompt_en: str,
+    prompt_vn: str,
     checkpoint: ProcessingCheckpoint,
     output_path: str,
     review_log_path: str,
@@ -277,14 +320,14 @@ def process_file(
             if not hasattr(checkpoint, 'pass1_cache'):
                 checkpoint.pass1_cache = {}
             
-            result1 = checkpoint.pass1_cache.get(page_key)
+            result_en = checkpoint.pass1_cache.get(page_key)
             
-            # PASS 1: Extract with first prompt (if not cached)
-            if not result1:
-                logger.info(f"    Pass 1/2...")
-                result1 = extract_from_image(image, model, prompt1, key_manager, METADATA_FIELDS, TABLE_ROW_FIELDS)
+            # PASS 1: Extract with English prompt (if not cached)
+            if not result_en:
+                logger.info(f"    Pass 1/2 (English fields)...")
+                result_en = extract_from_image(image, model, prompt_en, key_manager, METADATA_FIELDS, TABLE_ROW_FIELDS)
 
-                if not result1:
+                if not result_en:
                     logger.warning(f"  ✗ Pass 1 failed for page {page_num}")
                     output_entry = {
                         "source_file": file_path,
@@ -305,17 +348,17 @@ def process_file(
                     continue
                 
                 # Cache Pass 1 result
-                checkpoint.pass1_cache[page_key] = result1
+                checkpoint.pass1_cache[page_key] = result_en
                 save_checkpoint(checkpoint, checkpoint_path)
                 logger.info(f"    ✓ Pass 1 completed and cached")
             else:
                 logger.info(f"    ↻ Pass 1 already completed (using cached result)")
 
-            # PASS 2: Extract with second prompt
-            logger.info(f"    Pass 2/2...")
-            result2 = extract_from_image(image, model, prompt2, key_manager, METADATA_FIELDS_1, TABLE_ROW_FIELDS_1)
+            # PASS 2: Extract with Vietnamese prompt
+            logger.info(f"    Pass 2/2 (Vietnamese fields for validation)...")
+            result_vn = extract_from_image(image, model, prompt_vn, key_manager, METADATA_FIELDS_VN, TABLE_ROW_FIELDS_VN)
 
-            if not result2:
+            if not result_vn:
                 logger.warning(f"  ✗ Pass 2 failed for page {page_num}")
                 # Still save Pass 1 result
                 output_entry = {
@@ -324,8 +367,8 @@ def process_file(
                     "page_number": page_num,
                     "total_pages": len(images),
                     "extracted_at": datetime.now().isoformat(),
-                    "metadata": result1.get("metadata", []),
-                    "table_rows": result1.get("table_rows", []),
+                    "metadata": result_en.get("metadata", []),
+                    "table_rows": result_en.get("table_rows", []),
                     "validation_status": "pass_2_failed",
                 }
                 append_result(output_entry, output_path)
@@ -342,18 +385,21 @@ def process_file(
                 save_checkpoint(checkpoint, checkpoint_path)
                 continue
 
-            # Compare results
-            is_match = results_match(result1, result2)
+            # Convert Vietnamese result to English for comparison
+            result_vn_converted = convert_vn_to_en(result_vn)
 
-            # Always save Pass 1 result
+            # Compare results
+            is_match = results_match(result_en, result_vn_converted)
+
+            # Always save Pass 1 result (English fields)
             output_entry = {
                 "source_file": file_path,
                 "source_type": "pdf",
                 "page_number": page_num,
                 "total_pages": len(images),
                 "extracted_at": datetime.now().isoformat(),
-                "metadata": result1.get("metadata", []),
-                "table_rows": result1.get("table_rows", []),
+                "metadata": result_en.get("metadata", []),
+                "table_rows": result_en.get("table_rows", []),
                 "validation_status": "matched" if is_match else "mismatched",
             }
             append_result(output_entry, output_path)
@@ -364,8 +410,9 @@ def process_file(
                 # Log mismatch for review
                 log_mismatch(file_path, page_num, review_log_path)
                 logger.warning(f"  ⚠ Extracted data (MISMATCH - flagged for review)")
-                logger.warning(f"  → Pass 1 (fields_config): {json.dumps(result1, ensure_ascii=False)}")
-                logger.warning(f"  → Pass 2 (fields_config_1): {json.dumps(result2, ensure_ascii=False)}")
+                logger.warning(f"  → Pass 1 (English): {json.dumps(result_en, ensure_ascii=False)}")
+                logger.warning(f"  → Pass 2 (Vietnamese): {json.dumps(result_vn, ensure_ascii=False)}")
+                logger.warning(f"  → Pass 2 (Converted): {json.dumps(result_vn_converted, ensure_ascii=False)}")
 
             # Update checkpoint and clear cache
             file_progress["pages"].append(page_num)
@@ -387,14 +434,14 @@ def process_file(
             if not hasattr(checkpoint, 'pass1_cache'):
                 checkpoint.pass1_cache = {}
             
-            result1 = checkpoint.pass1_cache.get(page_key)
+            result_en = checkpoint.pass1_cache.get(page_key)
 
             # PASS 1 (if not cached)
-            if not result1:
-                logger.info(f"  Pass 1/2...")
-                result1 = extract_from_image(image, model, prompt1, key_manager, METADATA_FIELDS, TABLE_ROW_FIELDS)
+            if not result_en:
+                logger.info(f"  Pass 1/2 (English fields)...")
+                result_en = extract_from_image(image, model, prompt_en, key_manager, METADATA_FIELDS, TABLE_ROW_FIELDS)
 
-                if not result1:
+                if not result_en:
                     logger.warning(f"  ✗ Pass 1 failed")
                     output_entry = {
                         "source_file": file_path,
@@ -415,17 +462,17 @@ def process_file(
                     return True
                 
                 # Cache Pass 1 result
-                checkpoint.pass1_cache[page_key] = result1
+                checkpoint.pass1_cache[page_key] = result_en
                 save_checkpoint(checkpoint, checkpoint_path)
                 logger.info(f"  ✓ Pass 1 completed and cached")
             else:
                 logger.info(f"  ↻ Pass 1 already completed (using cached result)")
 
             # PASS 2
-            logger.info(f"  Pass 2/2...")
-            result2 = extract_from_image(image, model, prompt2, key_manager, METADATA_FIELDS_1, TABLE_ROW_FIELDS_1)
+            logger.info(f"  Pass 2/2 (Vietnamese fields for validation)...")
+            result_vn = extract_from_image(image, model, prompt_vn, key_manager, METADATA_FIELDS_VN, TABLE_ROW_FIELDS_VN)
 
-            if not result2:
+            if not result_vn:
                 logger.warning(f"  ✗ Pass 2 failed")
                 output_entry = {
                     "source_file": file_path,
@@ -433,8 +480,8 @@ def process_file(
                     "page_number": 1,
                     "total_pages": 1,
                     "extracted_at": datetime.now().isoformat(),
-                    "metadata": result1.get("metadata", []),
-                    "table_rows": result1.get("table_rows", []),
+                    "metadata": result_en.get("metadata", []),
+                    "table_rows": result_en.get("table_rows", []),
                     "validation_status": "pass_2_failed",
                 }
                 append_result(output_entry, output_path)
@@ -449,18 +496,21 @@ def process_file(
                 save_checkpoint(checkpoint, checkpoint_path)
                 return True
 
-            # Compare results
-            is_match = results_match(result1, result2)
+            # Convert Vietnamese result to English for comparison
+            result_vn_converted = convert_vn_to_en(result_vn)
 
-            # Save Pass 1 result
+            # Compare results
+            is_match = results_match(result_en, result_vn_converted)
+
+            # Save Pass 1 result (English fields)
             output_entry = {
                 "source_file": file_path,
                 "source_type": "image",
                 "page_number": 1,
                 "total_pages": 1,
                 "extracted_at": datetime.now().isoformat(),
-                "metadata": result1.get("metadata", []),
-                "table_rows": result1.get("table_rows", []),
+                "metadata": result_en.get("metadata", []),
+                "table_rows": result_en.get("table_rows", []),
                 "validation_status": "matched" if is_match else "mismatched",
             }
             append_result(output_entry, output_path)
@@ -470,8 +520,9 @@ def process_file(
             else:
                 log_mismatch(file_path, 1, review_log_path)
                 logger.warning("  ⚠ Extracted data (MISMATCH - flagged for review)")
-                logger.warning(f"  → Pass 1 (fields_config): {json.dumps(result1, ensure_ascii=False)}")
-                logger.warning(f"  → Pass 2 (fields_config_1): {json.dumps(result2, ensure_ascii=False)}")
+                logger.warning(f"  → Pass 1 (English): {json.dumps(result_en, ensure_ascii=False)}")
+                logger.warning(f"  → Pass 2 (Vietnamese): {json.dumps(result_vn, ensure_ascii=False)}")
+                logger.warning(f"  → Pass 2 (Converted): {json.dumps(result_vn_converted, ensure_ascii=False)}")
 
             file_progress["pages"].append(1)
             file_progress["completed"] = True
@@ -522,8 +573,8 @@ def run_pipeline(
         sys.exit(1)
 
     # Get extraction prompts
-    prompt1 = get_extraction_prompt()
-    prompt2 = get_extraction_prompt_1()
+    prompt_en = get_extraction_prompt()  # English fields
+    prompt_vn = get_extraction_prompt_vn()  # Vietnamese fields
 
     logger.info("=" * 60)
     logger.info("Starting DUAL-PASS data extraction pipeline")
@@ -533,6 +584,8 @@ def run_pipeline(
     logger.info(f"Checkpoint: {checkpoint_path}")
     logger.info(f"Files to process: {len(files)}")
     logger.info(f"API keys: {len(key_manager.keys)}")
+    logger.info("Pass 1: English field names (saved to output)")
+    logger.info("Pass 2: Vietnamese field names (for validation)")
     logger.info("NOTE: Each page/image will be processed TWICE (2x API calls)")
     logger.info("=" * 60)
     logger.info(key_manager.get_status_summary())
@@ -551,13 +604,13 @@ def run_pipeline(
             try:
                 genai.configure(api_key=current_key)
                 
-                model = genai.GenerativeModel("gemini-3-flash-preview",generation_config=genai.GenerationConfig(temperature=1.0))
+                model = genai.GenerativeModel("gemini-3-flash-preview",generation_config=genai.GenerationConfig(temperature=0.5))
 
                 success = process_file(
                     file_path=file_path,
                     model=model,
-                    prompt1=prompt1,
-                    prompt2=prompt2,
+                    prompt_en=prompt_en,
+                    prompt_vn=prompt_vn,
                     checkpoint=checkpoint,
                     output_path=output_path,
                     review_log_path=review_log_path,
@@ -608,7 +661,7 @@ def run_pipeline(
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="Dual-pass extraction with validation",
+        description="Dual-pass extraction with validation (English + Vietnamese)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
