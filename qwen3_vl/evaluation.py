@@ -27,14 +27,14 @@ from dotenv import load_dotenv
 from PIL import Image
 from tqdm.asyncio import tqdm as atqdm
 from difflib import SequenceMatcher
-from config.fields_config import get_extraction_prompt_evaluation
+from config.fields_config_vn import get_extraction_prompt_vi
 
 load_dotenv()
 
 HF_TOKEN = os.getenv("hf_token")
 base_url = os.getenv("base_url", "https://8fad34849342.ngrok-free.app")
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "ha684/qwen3-vl-8b-V1"
+MODEL_NAME = "ha684/qwen3-vl-2b-grpo-V1.2"
 DATASET_NAME = "ha684/vl-vi-conv-mix-v1.1"
 DATASET_SPLIT = "validation"
 MAX_CONCURRENT_REQUESTS = 2
@@ -467,7 +467,7 @@ def main():
     print(f"Columns: {dataset.column_names}")
     print(f"Concurrent requests: {MAX_CONCURRENT_REQUESTS}")
 
-    prompt = get_extraction_prompt_evaluation()
+    prompt = get_extraction_prompt_vi()
 
     print("\nStarting evaluation...")
     results = asyncio.run(evaluate_dataset_async(dataset, prompt))

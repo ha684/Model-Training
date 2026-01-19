@@ -236,9 +236,8 @@ class LazyVisionDataset(TorchDataset):
 
 
 class LazyVisionGRPODataset(TorchDataset):
-    def __init__(self, hf_dataset, instruction: str, processor):
+    def __init__(self, hf_dataset, processor):
         self.dataset = hf_dataset
-        self.instruction = instruction
         self.processor = processor
 
     def __len__(self):
@@ -252,13 +251,22 @@ class LazyVisionGRPODataset(TorchDataset):
             image = image.convert("RGB")
 
         answer_text = sample.get("text")
+        
+        language = detect_language(answer_text)
+        system_prompt, user_prompt = get_system_and_user_prompt(
+            language, sample=answer_text
+        )
 
         messages = [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": system_prompt}],
+            },
             {
                 "role": "user",
                 "content": [
                     {"type": "image", "image": image},
-                    {"type": "text", "text": self.instruction},
+                    {"type": "text", "text": user_prompt},
                 ],
             }
         ]
