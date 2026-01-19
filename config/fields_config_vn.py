@@ -1,8 +1,8 @@
-# config/fields_config_1.py
+# config/fields_config_vn.py
 # -*- coding: utf-8 -*-
 """
-Configuration file for data extraction - Validation Pass.
-Uses slightly different phrasing to catch extraction inconsistencies.
+Configuration file for data extraction fields and prompts.
+Modify the fields lists below to add/remove fields as needed.
 """
 
 DEFAULT_FIELDS_VI = [
@@ -79,7 +79,7 @@ YÊU CẦU ĐẦU RA:
 
 6. Mã AR
    - Mã tài khoản khách hàng
-   - Ví dụ: "A68/750", "A68/750_141"
+   - Ví dụ: "A68/750", "A68/750_141", "AR1830"
    - Trích xuất mã đầy đủ bao gồm cả hậu tố sau dấu gạch dưới nếu có
 
 ### CÁC TRƯỜNG TRONG BẢNG:

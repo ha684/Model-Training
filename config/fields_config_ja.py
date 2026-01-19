@@ -1,8 +1,8 @@
-# config/fields_config_1.py
+# config/fields_config_ja.py
 # -*- coding: utf-8 -*-
 """
-Configuration file for data extraction - Validation Pass.
-Uses slightly different phrasing to catch extraction inconsistencies.
+Configuration file for data extraction fields and prompts.
+Modify the fields lists below to add/remove fields as needed.
 """
 
 DEFAULT_FIELDS_JA = [
@@ -79,7 +79,7 @@ def get_extraction_prompt_ja() -> str:
 
 6. ARコード
    - 顧客アカウントコード
-   - 例: "A68/750", "A68/750_141"
+   - 例: "A68/750", "A68/750_141", "AR1830"
    - アンダースコアの後の接尾辞を含む完全なコードを抽出
 
 ### テーブルフィールド:

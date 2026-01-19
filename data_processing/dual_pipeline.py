@@ -28,15 +28,15 @@ from data_processing.utils import (
     append_result, save_checkpoint, load_checkpoint, get_supported_files
 )
 from data_processing.utils import ProcessingCheckpoint
-from config.fields_config import (
+from config.fields_config_en import (
     METADATA_FIELDS,
     TABLE_ROW_FIELDS,
     get_extraction_prompt,
 )
 from config.fields_config_vn import (
-    METADATA_FIELDS as METADATA_FIELDS_VN,
-    TABLE_ROW_FIELDS as TABLE_ROW_FIELDS_VN,
-    get_extraction_prompt as get_extraction_prompt_vn,
+    METADATA_FIELDS_VI as METADATA_FIELDS_VN,
+    TABLE_ROW_FIELDS_VI as TABLE_ROW_FIELDS_VN,
+    get_extraction_prompt_vi as get_extraction_prompt_vn,
 )
 
 logging.basicConfig(

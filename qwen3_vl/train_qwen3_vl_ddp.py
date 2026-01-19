@@ -6,13 +6,9 @@ Fine-tune Qwen3-VL Vision Language Model with Multi-GPU support using Supervised
 import argparse
 import os
 import sys
-import shutil
-import signal
 from pathlib import Path
 from typing import Any, Tuple
 
-# os.environ["NCCL_P2P_DISABLE"] = "1"
-# os.environ["NCCL_IB_DISABLE"] = "1"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,2"
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 os.environ["MLFLOW_TRACKING_USERNAME"]="robotpro682004"
@@ -39,7 +35,6 @@ from transformers import EarlyStoppingCallback
 from transformers.trainer_utils import get_last_checkpoint
 from trl import SFTConfig, SFTTrainer
 
-from config.fields_config_1 import get_extraction_prompt
 from qwen3_vl.training_utils import (
     create_custom_optimizer_and_scheduler,
     get_gpu_precision_settings,
@@ -47,6 +42,7 @@ from qwen3_vl.training_utils import (
     parse_common_args,
     setup_mlflow,
 )
+
 from qwen3_vl.utils import LazyVisionDataset
 
 
@@ -76,10 +72,8 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, An
         print(f"✅ Found {len(train_dataset)} training samples")
         print(f"✅ Found {len(eval_dataset)} validation samples")
 
-    instruction = get_extraction_prompt()
-
-    lazy_train = LazyVisionDataset(train_dataset, instruction)
-    lazy_eval = LazyVisionDataset(eval_dataset, instruction)
+    lazy_train = LazyVisionDataset(train_dataset)
+    lazy_eval = LazyVisionDataset(eval_dataset)
 
     if local_rank == 0:
         print("✅ Datasets wrapped with lazy loading (images loaded on-demand)")

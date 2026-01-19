@@ -43,7 +43,6 @@ from transformers import AutoProcessor, EarlyStoppingCallback
 from trl import GRPOConfig, GRPOTrainer
 from transformers.trainer_utils import get_last_checkpoint
 
-from config.fields_config_1 import get_extraction_prompt
 from qwen3_vl.utils import LazyVisionGRPODataset
 
 from qwen3_vl.training_utils import (
@@ -54,9 +53,8 @@ from qwen3_vl.training_utils import (
 )
 from qwen3_vl.reward_functions import (
     format_reward_func,
-    metadata_accuracy_reward_func,
-    table_rows_accuracy_reward_func,
-    length_penalty_reward_func,
+    metadata_reward_func,
+    table_row_reward_func,
 )
 
     
@@ -128,10 +126,9 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, An
         print(f"✅ Found {len(train_dataset)} training samples")
         print(f"✅ Found {len(eval_dataset)} validation samples")
 
-    instruction = get_extraction_prompt()
     processor = AutoProcessor.from_pretrained(args.model_name)
-    lazy_train = LazyVisionGRPODataset(train_dataset, instruction,processor)
-    lazy_eval = LazyVisionGRPODataset(eval_dataset, instruction,processor)
+    lazy_train = LazyVisionGRPODataset(train_dataset,processor)
+    lazy_eval = LazyVisionGRPODataset(eval_dataset,processor)
 
     if local_rank == 0:
         print("✅ Datasets wrapped with lazy loading (images loaded on-demand)")
@@ -231,9 +228,8 @@ def build_grpo_trainer(
         model=model,
         reward_funcs=[
             format_reward_func,
-            metadata_accuracy_reward_func,
-            table_rows_accuracy_reward_func,
-            length_penalty_reward_func,
+            metadata_reward_func,
+            table_row_reward_func,
         ],
         args=training_args,
         train_dataset=train_dataset,
