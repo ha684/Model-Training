@@ -171,6 +171,8 @@ def format_reward_func(completions, **kwargs):
 
 def metadata_reward_func(completions, answer, **kwargs):
     rewards = []
+    
+    VALID_SCHEMA_KEYS = set(ALL_META_KEYS)
 
     for completion, gt_item in zip(completions, answer):
         pred_raw = extract_json_from_text(completion)
@@ -179,31 +181,44 @@ def metadata_reward_func(completions, answer, **kwargs):
             continue
 
         gt_raw = gt_item if isinstance(gt_item, dict) else json.loads(gt_item)
-
         pred_data = normalize_json_structure(pred_raw)
         gt_data = normalize_json_structure(gt_raw)
 
         gt_meta = gt_data["metadata"]
         pred_meta = pred_data["metadata"]
 
-        relevant_keys = [
-            k for k in ALL_META_KEYS if normalize_text(gt_meta.get(k)) is not None
+        gt_active_keys = [
+            k for k in ALL_META_KEYS 
+            if normalize_text(gt_meta.get(k)) is not None
         ]
 
-        if not relevant_keys:
-            rewards.append(1.0)
-            continue
+        extra_valid_keys = []
+        for k in ALL_META_KEYS:
+            gt_val = normalize_text(gt_meta.get(k))
+            pred_val = normalize_text(pred_meta.get(k))
+            if gt_val is None and pred_val is not None:
+                extra_valid_keys.append(k)
 
-        meta_matches = 0
-        for k in relevant_keys:
+        ghost_keys = [
+            k for k in pred_meta.keys() 
+            if k not in VALID_SCHEMA_KEYS
+        ]
+
+        match_score_sum = 0.0
+        for k in gt_active_keys:
             gt_val = gt_meta.get(k)
             pred_val = pred_meta.get(k)
-            meta_matches += check_metadata_field(k, pred_val, gt_val)
+            match_score_sum += check_metadata_field(k, pred_val, gt_val)
 
-        meta_score = meta_matches / len(relevant_keys)
-        scaled_reward = (meta_score * 2.0) - 1.0
+        denominator = len(gt_active_keys) + len(extra_valid_keys) + len(ghost_keys)
 
-        rewards.append(scaled_reward)
+        if denominator == 0:
+            final_score = 1.0
+        else:
+            final_score = match_score_sum / denominator
+
+        # Scale về [-1, 1]
+        rewards.append((final_score * 2.0) - 1.0)
 
     return rewards
 

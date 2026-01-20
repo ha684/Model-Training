@@ -32,7 +32,7 @@ from config.fields_config_vn import get_extraction_prompt_vi
 load_dotenv()
 
 HF_TOKEN = os.getenv("hf_token")
-base_url = os.getenv("base_url", "https://8fad34849342.ngrok-free.app")
+base_url = "https://c9755d0f5a57.ngrok-free.app"
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
 MODEL_NAME = "ha684/qwen3-vl-2b-grpo-V1.2"
 DATASET_NAME = "ha684/vl-vi-conv-mix-v1.1"
@@ -85,7 +85,7 @@ async def call_vllm_api_async(
             }
         ],
         "max_tokens": 4096,
-        "temperature": 1.5,
+        "temperature": 1.2,
         "min_p": 0.1,
     }
 
@@ -211,6 +211,22 @@ def normalize_dia_chi(value: str) -> str:
     return normalized
 
 
+def normalize_date_field(value: str) -> str:
+    """
+    Normalize date fields by removing parentheses and their content.
+    Examples:
+    - "Ngày chứng từ(dd/mm/yyyy)" -> "Ngày chứng từ"
+    - "Ngày xuất(dd/mm/yyyy)" -> "Ngày xuất"
+    - "Ngày chứng từ(mm/dd/yyyy)" -> "Ngày chứng từ"
+    """
+    if value is None:
+        return None
+    
+    # Remove anything in parentheses including the parentheses
+    normalized = re.sub(r'\([^)]*\)', '', value)
+    return normalized.strip()
+
+
 def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
     """Compare metadata fields between prediction and ground truth."""
     results = {}
@@ -221,12 +237,16 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
         pred_meta = pred_meta[0] if pred_meta else {}
 
     fuzzy_fields = ["Kho nhận", "Địa chỉ"]
+    date_fields = ["Ngày chứng từ", "Ngày xuất"]  # Base names without (dd/mm/yyyy)
 
     for field in gt_meta.keys():
         pred_original = pred_meta.get(field)
         gt_original = gt_meta.get(field)
         
         correct = False
+        
+        # Normalize field name for comparison (remove parentheses part)
+        normalized_field = normalize_date_field(field)
         
         # 1. Xử lý Mã AR
         if field == "Mã AR":
@@ -242,12 +262,25 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
             
         # 3. Xử lý Kho nhận và Địa chỉ (Fuzzy Match)
         elif field in fuzzy_fields:
-            # Vẫn dùng normalize_dia_chi để xóa bớt khoảng trắng trước khi so sánh mờ
             p_norm = normalize_dia_chi(pred_original)
             g_norm = normalize_dia_chi(gt_original)
-            correct = is_fuzzy_match(p_norm, g_norm, threshold=0.85) # Ngưỡng 85% là khá an toàn
+            correct = is_fuzzy_match(p_norm, g_norm, threshold=0.85)
             
-        # 4. Các trường còn lại
+        # 4. Xử lý các trường ngày - tìm trong pred_meta với tên field có thể khác
+        elif normalized_field in date_fields:
+            # Tìm field tương ứng trong prediction (có thể có hoặc không có phần ngoặc)
+            pred_val = None
+            for pred_field_name, pred_field_value in pred_meta.items():
+                if normalize_date_field(pred_field_name) == normalized_field:
+                    pred_val = normalize_value(pred_field_value)
+                    break
+            
+            gt_val = normalize_value(gt_original)
+            
+            # Chỉ đúng khi cả hai giá trị bằng nhau (bao gồm cả trường hợp đều None)
+            correct = (pred_val == gt_val)
+                
+        # 5. Các trường còn lại
         else:
             pred_val = normalize_value(pred_original)
             gt_val = normalize_value(gt_original)
@@ -265,7 +298,6 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
         }
 
     return results
-
 
 def compare_table_rows(
     pred_rows: List[Dict], gt_rows: List[Dict]

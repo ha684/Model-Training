@@ -34,6 +34,8 @@ os.environ["HF_HOME"] = LOCAL_CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "datasets")
 os.environ["HF_HUB_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "hub")
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+os.environ["UNSLOTH_STABLE_DOWNLOADS"] = "1"
+os.environ["HF_HUB_DISABLE_XET"] = "1"
 
 from unsloth import FastVisionModel
 import mlflow

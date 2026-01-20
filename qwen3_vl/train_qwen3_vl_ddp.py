@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any, Tuple
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,2"
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+os.environ["UNSLOTH_STABLE_DOWNLOADS"] = "1"
+os.environ["HF_HUB_DISABLE_XET"] = "1"
 os.environ["MLFLOW_TRACKING_USERNAME"]="robotpro682004"
 os.environ["MLFLOW_TRACKING_PASSWORD"]="59d3b474fda55ef9e051969b30b778bc42763e2d"
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -100,7 +102,7 @@ def build_trainer(
         "logging_steps": args.logging_steps,
         "optim": "adamw_torch_fused",
         "weight_decay": args.weight_decay,
-        "lr_scheduler_type": "linear",
+        "lr_scheduler_type": "cosine",
         "seed": args.seed,
         "output_dir": args.output_dir,
         "report_to": args.report_to,

@@ -7,8 +7,8 @@ Modify the fields lists below to add/remove fields as needed.
 
 DEFAULT_FIELDS_VI = [
     "Số phiếu",
-    "Ngày chứng từ",
-    "Ngày xuất",
+    "Ngày chứng từ(dd/mm/yyyy)",
+    "Ngày xuất(dd/mm/yyyy)",
     "Mã FG",
     "Đvt",
     "Số lượng",
@@ -22,8 +22,8 @@ METADATA_FIELDS_VI = [
     "Kho nhận",
     "Địa chỉ",
     "Mã AR",
-    "Ngày chứng từ",
-    "Ngày xuất",
+    "Ngày chứng từ(dd/mm/yyyy)",
+    "Ngày xuất(dd/mm/yyyy)",
 ]
 
 TABLE_ROW_FIELDS_VI = [f for f in DEFAULT_FIELDS_VI if f not in METADATA_FIELDS_VI]
@@ -58,9 +58,10 @@ YÊU CẦU ĐẦU RA:
    - KHÔNG phải số trang viết tay như "1/2" hoặc số sau mã khách hàng
 
 2. Ngày chứng từ(dd/mm/yyyy)
-   - Ngày lập phiếu theo định dạng dd/mm/yyyy
+   - Ngày lập phiếu theo định dạng NGÀY/THÁNG/NĂM (dd/mm/yyyy)
+   - VÍ DỤ: "15/03/2025" nghĩa là ngày 15 tháng 3 năm 2025
+   - QUAN TRỌNG: Format Việt Nam là NGÀY trước, THÁNG sau (dd/mm/yyyy), KHÔNG PHẢI mm/dd/yyyy
    - Trích xuất chính xác như hiển thị trên chứng từ
-   - Nếu có nhiều ngày, chọn ngày được ghi là ngày lập/ngày chứng từ
 
 3. Ngày xuất(dd/mm/yyyy)
    - Ngày xuất kho hoặc ngày giao hàng theo định dạng dd/mm/yyyy
