@@ -28,95 +28,208 @@ from PIL import Image
 from tqdm.asyncio import tqdm as atqdm
 from difflib import SequenceMatcher
 
-# Import prompt generators for all languages
-from config.prompt_generator import (
+from config import (
+    FIELD_DEFINITIONS,
+    FieldDefinition,
     generate_extraction_prompt,
-    get_extraction_prompt_en,
-    get_extraction_prompt_ja,
-    get_extraction_prompt_vi,
 )
 
 load_dotenv()
 
 HF_TOKEN = os.getenv("hf_token")
-base_url = "https://3588b35550df.ngrok-free.app"
+base_url = "https://c20f7a6c94f4.ngrok-free.app"
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "ha684/qwen3-vl-8b-21-01-26"
-DATASET_NAME = "ha684/vl-vi-en-ja-conv-mix-v1.2"
+MODEL_NAME = "ha684/qwen3-vl-2b-20-01-26-2epochs"
+DATASET_NAME = "ha684/vl-vi-en-ja-conv-mix-v1.3"
 DATASET_SPLIT = "validation"
-MAX_CONCURRENT_REQUESTS = 10
+MAX_CONCURRENT_REQUESTS = 1
 TIMEOUT = 180
 MAX_RETRIES = 3
 RETRY_DELAY = 2 
 
 
-def detect_language_from_keys(data: Dict) -> str:
+def detect_language(data: Dict | str) -> str:
     """
     Detect language from JSON keys (not values).
     Returns: 'vi' for Vietnamese, 'ja' for Japanese, 'en' for English
+
+    Args:
+        data: Either a dictionary or a JSON string that will be parsed
     """
-    # Get all keys from metadata and table_rows
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            raise
+
+    if not isinstance(data, dict):
+        return "en"
+
     all_keys = []
-    
     metadata = data.get("metadata", [])
     if metadata:
         if isinstance(metadata, list):
             metadata = metadata[0] if metadata else {}
-        all_keys.extend(metadata.keys())
-    
+        if isinstance(metadata, dict):
+            all_keys.extend(metadata.keys())
+
     table_rows = data.get("table_rows", [])
     if table_rows and isinstance(table_rows, list) and len(table_rows) > 0:
-        all_keys.extend(table_rows[0].keys())
-    
-    # Convert all keys to string for checking
+        first_row = table_rows[0]
+        if isinstance(first_row, dict):
+            all_keys.extend(first_row.keys())
+
     all_keys_str = " ".join(all_keys)
-    
-    # Check for Japanese characters in keys
     japanese_chars = sum(
-        1 for c in all_keys_str 
+        1
+        for c in all_keys_str
         if "\u3040" <= c <= "\u30ff" or "\u4e00" <= c <= "\u9fff"
     )
     if japanese_chars > 0:
         return "ja"
-    
-    # Check for Vietnamese field names (common metadata fields)
-    vietnamese_fields = ["Số phiếu", "Ngày chứng từ", "Ngày xuất", "Kho nhận", 
-                         "Địa chỉ", "Mã AR", "Mã FG", "Đvt", "Số lượng"]
-    if any(field in all_keys for field in vietnamese_fields):
-        return "vi"
-    
-    # Check for English field names
-    english_fields = ["document_number", "document_date", "export_date", 
-                     "receiving_warehouse", "address", "ar_code", 
-                     "product_code", "unit", "quantity"]
+
+    vietnamese_fields = [
+        "Số phiếu",
+        "Ngày chứng từ",
+        "Ngày chứng từ(dd/mm/yyyy)",
+        "Ngày xuất",
+        "Ngày xuất(dd/mm/yyyy)",
+        "Kho nhận",
+        "Địa chỉ",
+        "Mã AR",
+        "Mã FG",
+        "Đvt",
+        "Số lượng",
+    ]
+    # Check if any Vietnamese field exists in keys (exact match or as substring)
+    for vn_field in vietnamese_fields:
+        if any(vn_field in key for key in all_keys):
+            return "vi"
+
+    english_fields = [
+        "document_number",
+        "document_date",
+        "export_date",
+        "receiving_warehouse",
+        "address",
+        "ar_code",
+        "product_code",
+        "unit",
+        "quantity",
+    ]
     if any(field in all_keys for field in english_fields):
         return "en"
-    
-    # Default to English if cannot determine
+
     return "en"
 
 
-def get_prompts_for_language(language: str) -> Tuple[str, str]:
+def detect_fields_in_sample(
+    sample: Dict, language: str = "en"
+) -> List[FieldDefinition]:
     """
-    Get system and user prompts for the detected language.
-    Returns: (system_prompt, user_prompt)
+    Detect which fields are present (non-null) in the sample's structured_output.
+    
+    Rules:
+    - Metadata: Detect exact keys present in sample (can be empty)
+    - Table: Always include product_code, detect unit and quantity if present
+
+    Args:
+        sample: Dataset sample with 'text' or 'structured_output' field
+        language: Language code for field name mapping
+
+    Returns:
+        List of FieldDefinitions that are present in the sample
+    """
+    structured_output = None
+    if "structured_output" in sample:
+        structured_output = sample["structured_output"]
+    elif "text" in sample:
+        text = sample["text"]
+        try:
+            structured_output = json.loads(text) if isinstance(text, str) else text
+        except:
+            return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
+
+    if not structured_output:
+        return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
+
+    if isinstance(structured_output, str):
+        try:
+            structured_output = json.loads(structured_output)
+        except:
+            return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
+
+    present_fields = []
+
+    # Handle metadata - detect keys in order they appear in data
+    metadata = structured_output.get("metadata", [])
+    if isinstance(metadata, list) and len(metadata) > 0:
+        metadata_dict = metadata[0]
+        if isinstance(metadata_dict, dict):
+            for key in metadata_dict.keys():
+                for field_def in FIELD_DEFINITIONS:
+                    if field_def.field_type == "metadata":
+                        field_name = field_def.get_name(language)
+                        if field_name == key:
+                            present_fields.append(field_def)
+                            break
+
+    # Handle table_rows - detect fields in order they appear in data
+    table_rows = structured_output.get("table_rows", [])
+
+    # Always add product_code first
+    product_code_field = next((f for f in FIELD_DEFINITIONS if f.key == "product_code"), None)
+    if product_code_field:
+        present_fields.append(product_code_field)
+
+    # Detect other table fields in order they appear
+    if table_rows and len(table_rows) > 0:
+        first_row = table_rows[0]
+        if isinstance(first_row, dict):
+            for key in first_row.keys():
+                if product_code_field and key == product_code_field.get_name(language):
+                    continue
+                for field_def in FIELD_DEFINITIONS:
+                    if field_def.field_type == "table":
+                        field_name = field_def.get_name(language)
+                        if field_name == key:
+                            present_fields.append(field_def)
+                            break
+
+    return present_fields
+
+
+def get_system_and_user_prompt(
+    language: str, sample: Dict = None, custom_fields: List[FieldDefinition] = None
+) -> Tuple[str, str]:
+    """
+    Get system prompt and user prompt based on language and detected fields.
+
+    Args:
+        language: Language code ('en', 'ja', 'vi')
+        sample: Optional sample to detect fields from
+        custom_fields: Optional custom field list to use
+
+    Returns:
+        (system_prompt, user_prompt)
     """
     user_prompts = {
         "en": "Extract all required fields and return in JSON format for me.",
         "vi": "Hãy trích xuất tất cả các trường cần thiết và trả về dưới dạng JSON cho tôi.",
         "ja": "必要なフィールドをすべて抽出してJSON形式で返してください。",
     }
-    
-    system_prompts = {
-        "en": get_extraction_prompt_en(),
-        "vi": get_extraction_prompt_vi(),
-        "ja": get_extraction_prompt_ja(),
-    }
-    
-    system_prompt = system_prompts.get(language, system_prompts["en"])
+
+    fields_to_use = custom_fields
+    if fields_to_use is None and sample is not None:
+        fields_to_use = detect_fields_in_sample(sample, language)
+
+    system_prompt = generate_extraction_prompt(
+        language=language, custom_fields=fields_to_use
+    )
     user_prompt = user_prompts.get(language, user_prompts["en"])
-    
+
     return system_prompt, user_prompt
+
 
 
 def image_to_base64(image) -> str:
@@ -345,6 +458,12 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict, language: str) -> Dict[str,
     if isinstance(pred_meta, list):
         pred_meta = pred_meta[0] if pred_meta else {}
 
+    # Ensure both are dicts after extraction from list
+    if not isinstance(gt_meta, dict):
+        gt_meta = {}
+    if not isinstance(pred_meta, dict):
+        pred_meta = {}
+
     # Get field mappings for this language
     field_map = get_field_mappings(language)
     
@@ -422,6 +541,13 @@ def compare_table_rows(
     if not gt_rows:
         return 0, 0, []
 
+    # Filter out non-dict rows
+    gt_rows = [row for row in gt_rows if isinstance(row, dict)]
+    pred_rows = [row for row in (pred_rows or []) if isinstance(row, dict)]
+
+    if not gt_rows:
+        return 0, 0, []
+
     field_map = get_field_mappings(language)
     product_code_field = field_map["product_code"]
     quantity_field = field_map["quantity"]
@@ -432,7 +558,7 @@ def compare_table_rows(
 
     pred_by_code = {
         normalize_value(row.get(product_code_field)): row 
-        for row in (pred_rows or [])
+        for row in pred_rows
     }
 
     for gt_row in gt_rows:
@@ -481,11 +607,14 @@ async def evaluate_single_async(
         return None
 
     # Detect language from ground truth keys
-    language = detect_language_from_keys(gt_data)
+    language = detect_language(gt_data)
     
     # Get appropriate prompts for the detected language
-    system_prompt, user_prompt = get_prompts_for_language(language)
-
+    system_prompt, user_prompt = get_system_and_user_prompt(language, sample=gt_data)
+    print(f"Ground truth: {gt_data}")
+    print(f"Language: {language}")
+    print(f"System prompt: {system_prompt}")
+    print(f"User prompt: {user_prompt}")
     # Check if ground truth has table_rows
     gt_has_table_rows = bool(gt_data.get("table_rows"))
 
@@ -516,17 +645,19 @@ async def evaluate_single_async(
         
         pred_data = parse_model_output(model_output)
 
-        if pred_data is None:
-            # Retry if JSON parsing failed
+        # Validate that pred_data is a dictionary (not None, string, or other type)
+        if pred_data is None or not isinstance(pred_data, dict):
+            # Retry if JSON parsing failed or returned non-dict
             if retry_count < MAX_RETRIES:
-                print(f"JSON parsing failed (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}. Retrying...")
+                error_type = "JSON parsing failed" if pred_data is None else f"Model returned {type(pred_data).__name__} instead of dict"
+                print(f"{error_type} (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}. Retrying...")
                 await asyncio.sleep(RETRY_DELAY)
                 return await evaluate_single_async(session, image, ground_truth, source_file, page_number, retry_count + 1)
             else:
                 return {
                     "success": False,
                     "skipped": False,
-                    "error": "JSON parsing failed after retries",
+                    "error": "JSON parsing failed after retries" if pred_data is None else f"Model returned {type(pred_data).__name__} instead of dict",
                     "metadata_scores": {},
                     "table_rows_correct": 0,
                     "table_rows_total": len(gt_data.get("table_rows", [])) if gt_has_table_rows else 0,
