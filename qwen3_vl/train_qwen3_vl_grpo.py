@@ -16,7 +16,6 @@ Usage:
 import argparse
 import json
 import os
-import shutil
 import sys
 from pathlib import Path
 from typing import Any, Tuple
@@ -29,37 +28,39 @@ LOCAL_CACHE_DIR = os.path.join(CURRENT_DIR, "local_hf_cache")
 if not os.path.exists(LOCAL_CACHE_DIR):
     os.makedirs(LOCAL_CACHE_DIR)
     print(f"📁 Created local cache directory: {LOCAL_CACHE_DIR}")
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+os.environ["UNSLOTH_STABLE_DOWNLOADS"] = "1"
+os.environ["HF_HUB_DISABLE_XET"] = "1"
 
+os.environ["MLFLOW_TRACKING_USERNAME"]="robotpro682004"
+os.environ["MLFLOW_TRACKING_PASSWORD"]="59d3b474fda55ef9e051969b30b778bc42763e2d"
 os.environ["HF_HOME"] = LOCAL_CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "datasets")
 os.environ["HF_HUB_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "hub")
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-os.environ["UNSLOTH_STABLE_DOWNLOADS"] = "1"
-os.environ["HF_HUB_DISABLE_XET"] = "1"
 
 from unsloth import FastVisionModel
 import mlflow
 import torch.distributed as dist
 from datasets import load_dataset
-from transformers import AutoProcessor, EarlyStoppingCallback
-from trl import GRPOConfig, GRPOTrainer
-from transformers.trainer_utils import get_last_checkpoint
-
-from qwen3_vl.utils import LazyVisionGRPODataset
-
+from qwen3_vl.reward_functions import (
+    format_reward_func,
+    metadata_reward_func,
+    table_row_reward_func,
+)
 from qwen3_vl.training_utils import (
     get_gpu_precision_settings,
     init_model,
     parse_common_args,
     setup_mlflow,
 )
-from qwen3_vl.reward_functions import (
-    format_reward_func,
-    metadata_reward_func,
-    table_row_reward_func,
-)
+from qwen3_vl.utils import LazyVisionGRPODataset
+from transformers import AutoProcessor
+from transformers.trainer_utils import get_last_checkpoint
+from trl import GRPOConfig, GRPOTrainer
 
-    
+
 def parse_args():
     """Parse command line arguments for GRPO training"""
     parser = argparse.ArgumentParser(
@@ -87,7 +88,10 @@ def parse_args():
         help="Maximum completion length for GRPO",
     )
     parser.add_argument(
-        "--max_grad_norm", type=float, default=0.1, help="Max gradient norm for clipping"
+        "--max_grad_norm",
+        type=float,
+        default=0.1,
+        help="Max gradient norm for clipping",
     )
     parser.add_argument(
         "--save_steps", type=int, default=60, help="Save checkpoint every N steps"
@@ -104,7 +108,10 @@ def parse_args():
         "--adam_beta2", type=float, default=0.99, help="Adam beta2 parameter"
     )
     parser.add_argument(
-        "--warmup_ratio", type=float, default=0.1, help="Warmup ratio (overrides warmup_steps)"
+        "--warmup_ratio",
+        type=float,
+        default=0.1,
+        help="Warmup ratio (overrides warmup_steps)",
     )
     parser.add_argument(
         "--use_gspo",
@@ -114,6 +121,7 @@ def parse_args():
 
     return parser.parse_args()
 
+
 def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
     if local_rank == 0:
         print(f"📊 Loading dataset: {args.dataset_name}")
@@ -121,16 +129,20 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, An
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
-    train_dataset = load_dataset(args.dataset_name, split="train", cache_dir=args.dataset_cache_dir)
-    eval_dataset = load_dataset(args.dataset_name, split="validation", cache_dir=args.dataset_cache_dir)
+    train_dataset = load_dataset(
+        args.dataset_name, split="train", cache_dir=args.dataset_cache_dir
+    )
+    eval_dataset = load_dataset(
+        args.dataset_name, split="test", cache_dir=args.dataset_cache_dir
+    )
 
     if local_rank == 0:
         print(f"✅ Found {len(train_dataset)} training samples")
         print(f"✅ Found {len(eval_dataset)} validation samples")
 
     processor = AutoProcessor.from_pretrained(args.model_name)
-    lazy_train = LazyVisionGRPODataset(train_dataset,processor)
-    lazy_eval = LazyVisionGRPODataset(eval_dataset,processor)
+    lazy_train = LazyVisionGRPODataset(train_dataset, processor)
+    lazy_eval = LazyVisionGRPODataset(eval_dataset, processor)
 
     if local_rank == 0:
         print("✅ Datasets wrapped with lazy loading (images loaded on-demand)")
@@ -173,16 +185,16 @@ def build_grpo_trainer(
         "run_name": args.mlflow_run_name,
         "seed": args.seed,
         "save_total_limit": 1,
-        "load_best_model_at_end": True,
+        "load_best_model_at_end": False,
         "remove_unused_columns": False,
-        "eval_strategy": "steps",
+        "eval_strategy": "no",
         "eval_steps": args.eval_steps,
         "save_strategy": "steps",
-        "temperature": 1.5,
-        "min_p": 0.1,
+        "temperature": 1.0,
         "overwrite_output_dir": False,
-        "metric_for_best_model": "reward",
-        "greater_is_better": True,
+        "metric_for_best_model": "eval_loss",
+        "greater_is_better": False,
+        "beta": 0.1,
         **precision_settings,
     }
 
@@ -237,13 +249,13 @@ def build_grpo_trainer(
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
-        callbacks=[
-            EarlyStoppingCallback(
-                early_stopping_patience=5, early_stopping_threshold=0.0
-            )
-        ],
+        # callbacks=[
+        #     EarlyStoppingCallback(
+        #         early_stopping_patience=5, early_stopping_threshold=0.0
+        #     )
+        # ],
     )
-    
+
     return trainer
 
 
@@ -288,9 +300,11 @@ def main():
 
     if rank == 0:
         print("🔨 Building GRPO trainer...")
-        
+
     FastVisionModel.for_training(model)
-    trainer = build_grpo_trainer(model, tokenizer, train_dataset, eval_dataset, args, world_size, local_rank=rank)
+    trainer = build_grpo_trainer(
+        model, tokenizer, train_dataset, eval_dataset, args, world_size, local_rank=rank
+    )
 
     if rank == 0:
         print("🎯 Starting GRPO training...")
@@ -310,11 +324,11 @@ def main():
             print("🛑 Caught KeyboardInterrupt (Ctrl+C)!")
             print("💾 Saving current state to checkpoint before exiting...")
             print("!" * 80)
-            
+
             # Lưu model và state để resume sau này
             trainer.save_model(args.output_dir)
-            trainer.save_state() 
-            
+            trainer.save_state()
+
             if args.save_model:
                 print(f"💾 Saving final model wrapper to {args.model_save_path}...")
                 model.save_pretrained(args.model_save_path)
@@ -330,7 +344,11 @@ def main():
                 print(f"📊 Training stats: {trainer_stats}")
 
             if args.metric_file and trainer_stats:
-                final_loss = trainer_stats.training_loss if hasattr(trainer_stats, 'training_loss') else 0.0
+                final_loss = (
+                    trainer_stats.training_loss
+                    if hasattr(trainer_stats, "training_loss")
+                    else 0.0
+                )
                 with open(args.metric_file, "w") as f:
                     json.dump({"training_loss": final_loss}, f)
 
@@ -347,16 +365,17 @@ def main():
                 print("⚠️ HF_TOKEN not found. Cannot push to Hub.")
             else:
                 if args.merge_and_push:
-                    # Merge LoRA with base model and push merged model
-                    print(f"🔀 Merging LoRA adapter with base model...")
-                    print(f"🚀 Pushing merged {args.save_method} model to Hugging Face Hub: {args.hub_model_id}...")
+                    print("🔀 Merging LoRA adapter with base model...")
+                    print(
+                        f"🚀 Pushing merged {args.save_method} model to Hugging Face Hub: {args.hub_model_id}..."
+                    )
                     try:
                         if args.save_method == "merged_16bit":
                             model.push_to_hub_merged(
                                 args.hub_model_id,
                                 tokenizer,
                                 save_method="merged_16bit",
-                                token=hf_token
+                                token=hf_token,
                             )
                         elif args.save_method == "gguf":
                             print(f"   Quantization method: {args.quantization_method}")
@@ -364,14 +383,16 @@ def main():
                                 args.hub_model_id,
                                 tokenizer,
                                 quantization_method=args.quantization_method,
-                                token=hf_token
+                                token=hf_token,
                             )
                         print("✅ Merged model pushed to Hub successfully!")
                     except Exception as e:
                         print(f"⚠️ Failed to merge and push to hub: {e}")
                 else:
                     # Just push LoRA adapter (original behavior)
-                    print(f"🚀 Pushing LoRA adapter to Hugging Face Hub: {args.hub_model_id}...")
+                    print(
+                        f"🚀 Pushing LoRA adapter to Hugging Face Hub: {args.hub_model_id}..."
+                    )
                     try:
                         model.push_to_hub(args.hub_model_id, use_temp_dir=True)
                         tokenizer.push_to_hub(args.hub_model_id, use_temp_dir=True)
@@ -385,16 +406,22 @@ def main():
         def upload_and_cleanup():
             # Chỉ log metrics, không upload artifacts nặng và không xoá local
             if trainer_stats:
-                 mlflow.log_metrics({"training_loss": trainer_stats.training_loss} if hasattr(trainer_stats, 'training_loss') else {})
+                mlflow.log_metrics(
+                    {"training_loss": trainer_stats.training_loss}
+                    if hasattr(trainer_stats, "training_loss")
+                    else {}
+                )
 
             # if args.save_model:
             #     mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
-            
+
             print("✅ Metrics logged. Artifacts kept locally.")
             print("💾 Files kept locally. No upload performed.")
 
         if mlflow.active_run():
-            print(f"🔗 Attaching to CURRENT active run: {mlflow.active_run().info.run_id}")
+            print(
+                f"🔗 Attaching to CURRENT active run: {mlflow.active_run().info.run_id}"
+            )
             upload_and_cleanup()
             mlflow.end_run()
         else:
@@ -409,14 +436,16 @@ def main():
     if rank == 0:
         print("\n" + "=" * 70)
         if interrupted:
-            print("🛑 Training Interrupted but Saved LOCALLY. Resume by running script again. 🦥💤")
+            print(
+                "🛑 Training Interrupted but Saved LOCALLY. Resume by running script again. 🦥💤"
+            )
         else:
             print("🎉 All done! Happy training! 🦥⚡")
         print("=" * 70)
 
     if dist.is_initialized():
         dist.destroy_process_group()
-    
+
     if interrupted:
         sys.exit(0)
 

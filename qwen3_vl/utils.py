@@ -1,35 +1,82 @@
-# qwen3-vl/utils.py
 import json
 from typing import Dict, List, Tuple
-
-from torch.utils.data import Dataset as TorchDataset
 
 from config import (
     FIELD_DEFINITIONS,
     FieldDefinition,
     generate_extraction_prompt,
 )
+from torch.utils.data import Dataset as TorchDataset
 
 
-def detect_language(text: str) -> str:
+def detect_language(data: Dict | str) -> str:
     """
-    Detect language from text content.
+    Detect language from JSON keys (not values).
     Returns: 'vi' for Vietnamese, 'ja' for Japanese, 'en' for English
+
+    Args:
+        data: Either a dictionary or a JSON string that will be parsed
     """
-    if not text:
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            raise
+
+    if not isinstance(data, dict):
         return "en"
 
+    all_keys = []
+    metadata = data.get("metadata", [])
+    if metadata:
+        if isinstance(metadata, list):
+            metadata = metadata[0] if metadata else {}
+        all_keys.extend(metadata.keys())
+
+    table_rows = data.get("table_rows", [])
+    if table_rows and isinstance(table_rows, list) and len(table_rows) > 0:
+        all_keys.extend(table_rows[0].keys())
+
+    all_keys_str = " ".join(all_keys)
     japanese_chars = sum(
-        1 for c in text if "\u3040" <= c <= "\u30ff" or "\u4e00" <= c <= "\u9fff"
+        1
+        for c in all_keys_str
+        if "\u3040" <= c <= "\u30ff" or "\u4e00" <= c <= "\u9fff"
     )
-    if japanese_chars > len(text) * 0.1:
+    if japanese_chars > 0:
         return "ja"
 
-    vietnamese_chars = (
-        "ăâđêôơưàảãáạằẳẵắặầẩẫấậèẻẽéẹềểễếệìỉĩíịòỏõóọồổỗốộờởỡớợùủũúụừửữứựỳỷỹýỵ"
-    )
-    if any(c in text.lower() for c in vietnamese_chars):
-        return "vi"
+    vietnamese_fields = [
+        "Số phiếu",
+        "Ngày chứng từ",
+        "Ngày chứng từ(dd/mm/yyyy)",
+        "Ngày xuất",
+        "Ngày xuất(dd/mm/yyyy)",
+        "Kho nhận",
+        "Địa chỉ",
+        "Mã AR",
+        "Mã FG",
+        "Đvt",
+        "Số lượng",
+    ]
+    # Check if any Vietnamese field exists in keys (exact match or as substring)
+    for vn_field in vietnamese_fields:
+        if any(vn_field in key for key in all_keys):
+            return "vi"
+
+    english_fields = [
+        "document_number",
+        "document_date",
+        "export_date",
+        "receiving_warehouse",
+        "address",
+        "ar_code",
+        "product_code",
+        "unit",
+        "quantity",
+    ]
+    if any(field in all_keys for field in english_fields):
+        return "en"
 
     return "en"
 
@@ -39,6 +86,10 @@ def detect_fields_in_sample(
 ) -> List[FieldDefinition]:
     """
     Detect which fields are present (non-null) in the sample's structured_output.
+    
+    Rules:
+    - Metadata: Detect exact keys present in sample (can be empty)
+    - Table: Always include product_code, detect unit and quantity if present
 
     Args:
         sample: Dataset sample with 'text' or 'structured_output' field
@@ -48,7 +99,6 @@ def detect_fields_in_sample(
         List of FieldDefinitions that are present in the sample
     """
     structured_output = None
-
     if "structured_output" in sample:
         structured_output = sample["structured_output"]
     elif "text" in sample:
@@ -56,37 +106,51 @@ def detect_fields_in_sample(
         try:
             structured_output = json.loads(text) if isinstance(text, str) else text
         except:
-            return FIELD_DEFINITIONS
+            return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
 
     if not structured_output:
-        return FIELD_DEFINITIONS
+        return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
 
     if isinstance(structured_output, str):
         try:
             structured_output = json.loads(structured_output)
         except:
-            return FIELD_DEFINITIONS
+            return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
 
     present_fields = []
 
-    metadata = structured_output.get("metadata", {})
-    for field_def in FIELD_DEFINITIONS:
-        if field_def.field_type == "metadata":
-            field_name = field_def.get_name(language)
-            if field_name in metadata and metadata[field_name] is not None:
-                present_fields.append(field_def)
+    # Handle metadata - detect keys in order they appear in data
+    metadata = structured_output.get("metadata", [])
+    if isinstance(metadata, list) and len(metadata) > 0:
+        metadata_dict = metadata[0]
+        for key in metadata_dict.keys():
+            for field_def in FIELD_DEFINITIONS:
+                if field_def.field_type == "metadata":
+                    field_name = field_def.get_name(language)
+                    if field_name == key:
+                        present_fields.append(field_def)
+                        break
 
+    # Handle table_rows - detect fields in order they appear in data
     table_rows = structured_output.get("table_rows", [])
-    if table_rows:
-        first_row = table_rows[0]
-        for field_def in FIELD_DEFINITIONS:
-            if field_def.field_type == "table":
-                field_name = field_def.get_name(language)
-                if field_name in first_row and first_row[field_name] is not None:
-                    present_fields.append(field_def)
 
-    if not present_fields:
-        return FIELD_DEFINITIONS
+    # Always add product_code first
+    product_code_field = next((f for f in FIELD_DEFINITIONS if f.key == "product_code"), None)
+    if product_code_field:
+        present_fields.append(product_code_field)
+
+    # Detect other table fields in order they appear
+    if table_rows and len(table_rows) > 0:
+        first_row = table_rows[0]
+        for key in first_row.keys():
+            if product_code_field and key == product_code_field.get_name(language):
+                continue
+            for field_def in FIELD_DEFINITIONS:
+                if field_def.field_type == "table":
+                    field_name = field_def.get_name(language)
+                    if field_name == key:
+                        present_fields.append(field_def)
+                        break
 
     return present_fields
 
@@ -112,14 +176,12 @@ def get_system_and_user_prompt(
     }
 
     fields_to_use = custom_fields
-
     if fields_to_use is None and sample is not None:
         fields_to_use = detect_fields_in_sample(sample, language)
 
     system_prompt = generate_extraction_prompt(
         language=language, custom_fields=fields_to_use
     )
-
     user_prompt = user_prompts.get(language, user_prompts["en"])
 
     return system_prompt, user_prompt
@@ -133,7 +195,6 @@ def convert_to_conversation(sample: Dict) -> Dict:
         if not multiturn:
             text_content = sample.get("text", "")
             language = detect_language(text_content)
-
             system_prompt, user_prompt = get_system_and_user_prompt(
                 language, sample=sample
             )
@@ -159,36 +220,29 @@ def convert_to_conversation(sample: Dict) -> Dict:
 
         text_data = sample["text"]
         raw_data = json.loads(text_data) if isinstance(text_data, str) else text_data
-
         conversation = []
 
         for item in raw_data:
             if "user" in item and "assistant" in item:
                 conversation.append({"role": "user", "content": item["user"]})
                 conversation.append({"role": "assistant", "content": item["assistant"]})
-
             elif "role" in item or "from" in item:
                 role = item.get("role", item.get("from", "")).lower()
                 content = item.get("content", item.get("value", ""))
-
                 if role == "human":
                     role = "user"
                 if role == "gpt":
                     role = "assistant"
-
                 conversation.append({"role": role, "content": content})
-
             else:
                 raise ValueError(
                     f"Unknown conversation format keys: {list(item.keys())}"
                 )
 
         image_added = False
-
         for message in conversation:
             if message["role"] == "user":
                 current_content = message["content"]
-
                 if isinstance(current_content, str):
                     message["content"] = [
                         {"type": "text", "text": current_content},
@@ -197,7 +251,6 @@ def convert_to_conversation(sample: Dict) -> Dict:
                 elif isinstance(current_content, list):
                     if not any(x.get("type") == "image" for x in current_content):
                         message["content"].append({"type": "image", "image": image})
-
                 image_added = True
                 break
 
@@ -205,20 +258,19 @@ def convert_to_conversation(sample: Dict) -> Dict:
             raise ValueError(
                 "Sample is multiturn but has no 'user' role to insert image after normalization."
             )
-        print(f"Conversation: {conversation}")
+
         return {"messages": conversation}
 
     except Exception as e:
         print("\n" + "=" * 60)
-        print(f"❌ FATAL ERROR DETECTED: {e}")
-        print(f"❌ Source File: {sample.get('source_file', 'Unknown')}")
-        print("-" * 20 + " BAD SAMPLE CONTENT " + "-" * 20)
-
+        print(f"ERROR: {e}")
+        print(f"Source File: {sample.get('source_file', 'Unknown')}")
+        print("-" * 60)
         debug_sample = sample.copy()
         debug_sample["image"] = (
-            f"<Image Object: {sample['image'].size if hasattr(sample['image'], 'size') else 'Unknown'}>"
+            f"<PIL.Image {sample['image'].size if hasattr(sample.get('image'), 'size') else 'N/A'}>"
         )
-        print(json.dumps(debug_sample, indent=4, ensure_ascii=False, default=str))
+        print(json.dumps(debug_sample, indent=2, ensure_ascii=False, default=str))
         print("=" * 60 + "\n")
         raise e
 
@@ -239,23 +291,26 @@ class LazyVisionGRPODataset(TorchDataset):
     def __init__(self, hf_dataset, processor):
         self.dataset = hf_dataset
         self.processor = processor
+        self.valid_indices = [
+            i
+            for i in range(len(hf_dataset))
+            if not hf_dataset[i].get("is_multiturn", False)
+        ]
 
     def __len__(self):
-        return len(self.dataset)
+        return len(self.valid_indices)
 
     def __getitem__(self, idx):
-        sample = self.dataset[idx]
-        image = sample["image"]
+        actual_idx = self.valid_indices[idx]
+        sample = self.dataset[actual_idx]
 
+        image = sample["image"]
         if hasattr(image, "mode") and image.mode != "RGB":
             image = image.convert("RGB")
 
         answer_text = sample.get("text")
-        
         language = detect_language(answer_text)
-        system_prompt, user_prompt = get_system_and_user_prompt(
-            language, sample=answer_text
-        )
+        system_prompt, user_prompt = get_system_and_user_prompt(language, sample=sample)
 
         messages = [
             {
@@ -268,10 +323,11 @@ class LazyVisionGRPODataset(TorchDataset):
                     {"type": "image", "image": image},
                     {"type": "text", "text": user_prompt},
                 ],
-            }
+            },
         ]
 
         prompt_text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
+
         return {"prompt": prompt_text, "image": image, "answer": answer_text}

@@ -15,27 +15,20 @@ Language = Literal["en", "ja", "vi"]
 @dataclass
 class FieldDefinition:
     """Definition of a field with multilingual support."""
-
-    # Field key (internal identifier)
     key: str
 
-    # Field type: metadata or table
     field_type: FieldType
 
-    # Field names in different languages
     name_en: str
     name_ja: str
     name_vi: str
 
-    # Field descriptions in different languages
     description_en: str
     description_ja: str
     description_vi: str
 
-    # Data type for the field
-    data_type: str = "string"  # "string", "number", "date", etc.
+    data_type: str = "string"
 
-    # Whether the field is optional
     optional: bool = False
 
     def get_name(self, language: Language) -> str:
@@ -72,7 +65,7 @@ FIELD_DEFINITIONS: List[FieldDefinition] = [
         field_type="metadata",
         name_en="document_date",
         name_ja="伝票日付",
-        name_vi="Ngày chứng từ",
+        name_vi="Ngày chứng từ(dd/mm/yyyy)",
         description_en="""- Document issue date in dd/mm/yyyy format
    - Extract exactly as shown on document
    - If multiple dates exist, choose the one labeled as issue/document date""",
@@ -89,7 +82,7 @@ FIELD_DEFINITIONS: List[FieldDefinition] = [
         field_type="metadata",
         name_en="export_date",
         name_ja="出庫日付",
-        name_vi="Ngày xuất",
+        name_vi="Ngày xuất(dd/mm/yyyy)",
         description_en="""- Delivery or shipment date in dd/mm/yyyy format
    - Extract exactly as shown on document
    - May be same as or different from document_date""",

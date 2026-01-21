@@ -9,10 +9,11 @@ import sys
 from pathlib import Path
 from typing import Any, Tuple
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["UNSLOTH_STABLE_DOWNLOADS"] = "1"
 os.environ["HF_HUB_DISABLE_XET"] = "1"
+
 os.environ["MLFLOW_TRACKING_USERNAME"]="robotpro682004"
 os.environ["MLFLOW_TRACKING_PASSWORD"]="59d3b474fda55ef9e051969b30b778bc42763e2d"
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -69,7 +70,6 @@ def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, An
     
     train_dataset = load_dataset(args.dataset_name, split="train", cache_dir=local_cache)
     eval_dataset = load_dataset(args.dataset_name, split="test", cache_dir=local_cache)
-
     if local_rank == 0:
         print(f"✅ Found {len(train_dataset)} training samples")
         print(f"✅ Found {len(eval_dataset)} validation samples")
@@ -332,25 +332,6 @@ def main():
             if 'metrics' in locals():
                 print("📊 Logging eval metrics directly to run...")
                 mlflow.log_metrics(metrics)
-            
-            # 2. DISABLED: Không upload artifacts (file model nặng)
-            # if args.save_model and os.path.exists(args.model_save_path):
-            #     mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
-            # elif os.path.exists(args.output_dir) and interrupted:
-            #      mlflow.log_artifacts(args.output_dir, artifact_path="checkpoints_interrupted")
-            # print("✅ Artifacts uploaded successfully!")
-
-            # 3. DISABLED: Không xóa file local (để giữ lại resume hoặc dùng sau này)
-            # print("🧹 Cleaning up local disk to save space...")
-            # try:
-            #     if not interrupted and os.path.exists(args.output_dir):
-            #         shutil.rmtree(args.output_dir)
-            #         print(f"   - Deleted: {args.output_dir}")
-            #     if args.save_model and os.path.exists(args.model_save_path):
-            #         shutil.rmtree(args.model_save_path)
-            #         print(f"   - Deleted: {args.model_save_path}")
-            # except Exception as e:
-            #     print(f"⚠️ Error during cleanup: {e}")
             
             print("💾 Files kept locally. No upload performed.")
 

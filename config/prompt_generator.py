@@ -89,34 +89,37 @@ def _generate_json_structure(
     metadata_fields: List[str], table_fields: List[str], template: dict
 ) -> str:
     """Generate JSON structure example."""
-    metadata_items = ", ".join(
-        [f'"{f}": {template["value_placeholder"]}' for f in metadata_fields]
-    )
+    parts = []
+    
+    # Metadata is always a list[dict], can be empty []
+    if metadata_fields:
+        metadata_items = ", ".join(
+            [f'"{f}": {template["value_placeholder"]}' for f in metadata_fields]
+        )
+        parts.append(f'  "{template["metadata_label"]}": [\n    {{\n      {metadata_items}\n    }}\n  ]')
+    else:
+        # Empty metadata list
+        parts.append(f'  "{template["metadata_label"]}": []')
+    
+    # Table rows is always a list[dict], always has product_code at minimum
+    # Can be empty [] if no table in image
     table_items = ", ".join(
         [f'"{f}": {template["value_placeholder"]}' for f in table_fields]
     )
-
-    return f"""{{
-  "{template["metadata_label"]}": {{
-    {metadata_items}
-  }},
-  "{template["table_rows_label"]}": [
-    {{
-      {table_items}
-    }}
-  ]
-}}"""
+    parts.append(f'  "{template["table_rows_label"]}": [\n    {{\n      {table_items}\n    }}\n  ]')
+    
+    return "{\n" + ",\n".join(parts) + "\n}"
 
 
 def _generate_field_descriptions(
-    fields: List[FieldDefinition], language: Language, start_index: int = 1
+    fields: List[FieldDefinition], language: Language
 ) -> str:
-    """Generate numbered field descriptions."""
+    """Generate field descriptions without numbering."""
     descriptions = []
-    for i, field in enumerate(fields, start=start_index):
+    for field in fields:
         field_name = field.get_name(language)
         field_desc = field.get_description(language)
-        descriptions.append(f"{i}. {field_name}\n{field_desc}")
+        descriptions.append(f"{field_name}\n{field_desc}")
 
     return "\n\n".join(descriptions)
 
@@ -177,28 +180,33 @@ def generate_extraction_prompt(
     sections.append(template["extraction_instructions"])
     sections.append("")
 
-    # Metadata fields
-    sections.append(template["metadata_section"])
-    sections.append("")
-    sections.append(
-        _generate_field_descriptions(metadata_fields_defs, language, start_index=1)
-    )
-    sections.append("")
+    # Metadata fields - only add if there are metadata fields
+    if metadata_fields_defs:
+        sections.append(template["metadata_section"])
+        sections.append("")
+        sections.append(
+            _generate_field_descriptions(metadata_fields_defs, language)
+        )
+        sections.append("")
 
-    # Table fields
+    # Table fields - always add (at minimum has product_code)
     sections.append(template["table_section"])
     sections.append("")
-    table_start_index = len(metadata_fields_defs) + 1
     sections.append(
-        _generate_field_descriptions(
-            table_fields_defs, language, start_index=table_start_index
-        )
+        _generate_field_descriptions(table_fields_defs, language)
     )
     sections.append("")
 
     # Important rules
     sections.append(template["important_rules"])
     for rule in template["rules"]:
+        # Skip rules that reference quantity if quantity field not in selected fields
+        if "{quantity_field}" in rule and not any(f.key == "quantity" for f in fields):
+            continue
+        # Skip rules that reference table_rows if no table fields
+        if "{table_rows}" in rule and not table_fields_defs:
+            continue
+        
         formatted_rule = rule.format(
             quantity_field=quantity_field_name, table_rows=template["table_rows_label"]
         )

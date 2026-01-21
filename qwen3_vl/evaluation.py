@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 Evaluation script for vLLM-served vision-language model on extraction task.
+Supports multi-language evaluation (English, Japanese, Vietnamese).
 Compares model predictions against ground truth labels from validation dataset.
 Optimized with concurrent requests.
 """
 
 import sys
 from pathlib import Path
-
 
 import re
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -27,37 +27,110 @@ from dotenv import load_dotenv
 from PIL import Image
 from tqdm.asyncio import tqdm as atqdm
 from difflib import SequenceMatcher
-from config.fields_config_vn import get_extraction_prompt_vi
+
+# Import prompt generators for all languages
+from config.prompt_generator import (
+    generate_extraction_prompt,
+    get_extraction_prompt_en,
+    get_extraction_prompt_ja,
+    get_extraction_prompt_vi,
+)
 
 load_dotenv()
 
 HF_TOKEN = os.getenv("hf_token")
-base_url = "https://c9755d0f5a57.ngrok-free.app"
+base_url = "https://3588b35550df.ngrok-free.app"
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "ha684/qwen3-vl-2b-grpo-V1.2"
-DATASET_NAME = "ha684/vl-vi-conv-mix-v1.1"
+MODEL_NAME = "ha684/qwen3-vl-8b-21-01-26"
+DATASET_NAME = "ha684/vl-vi-en-ja-conv-mix-v1.2"
 DATASET_SPLIT = "validation"
-MAX_CONCURRENT_REQUESTS = 2
+MAX_CONCURRENT_REQUESTS = 10
 TIMEOUT = 180
+MAX_RETRIES = 3
+RETRY_DELAY = 2 
+
+
+def detect_language_from_keys(data: Dict) -> str:
+    """
+    Detect language from JSON keys (not values).
+    Returns: 'vi' for Vietnamese, 'ja' for Japanese, 'en' for English
+    """
+    # Get all keys from metadata and table_rows
+    all_keys = []
+    
+    metadata = data.get("metadata", [])
+    if metadata:
+        if isinstance(metadata, list):
+            metadata = metadata[0] if metadata else {}
+        all_keys.extend(metadata.keys())
+    
+    table_rows = data.get("table_rows", [])
+    if table_rows and isinstance(table_rows, list) and len(table_rows) > 0:
+        all_keys.extend(table_rows[0].keys())
+    
+    # Convert all keys to string for checking
+    all_keys_str = " ".join(all_keys)
+    
+    # Check for Japanese characters in keys
+    japanese_chars = sum(
+        1 for c in all_keys_str 
+        if "\u3040" <= c <= "\u30ff" or "\u4e00" <= c <= "\u9fff"
+    )
+    if japanese_chars > 0:
+        return "ja"
+    
+    # Check for Vietnamese field names (common metadata fields)
+    vietnamese_fields = ["Số phiếu", "Ngày chứng từ", "Ngày xuất", "Kho nhận", 
+                         "Địa chỉ", "Mã AR", "Mã FG", "Đvt", "Số lượng"]
+    if any(field in all_keys for field in vietnamese_fields):
+        return "vi"
+    
+    # Check for English field names
+    english_fields = ["document_number", "document_date", "export_date", 
+                     "receiving_warehouse", "address", "ar_code", 
+                     "product_code", "unit", "quantity"]
+    if any(field in all_keys for field in english_fields):
+        return "en"
+    
+    # Default to English if cannot determine
+    return "en"
+
+
+def get_prompts_for_language(language: str) -> Tuple[str, str]:
+    """
+    Get system and user prompts for the detected language.
+    Returns: (system_prompt, user_prompt)
+    """
+    user_prompts = {
+        "en": "Extract all required fields and return in JSON format for me.",
+        "vi": "Hãy trích xuất tất cả các trường cần thiết và trả về dưới dạng JSON cho tôi.",
+        "ja": "必要なフィールドをすべて抽出してJSON形式で返してください。",
+    }
+    
+    system_prompts = {
+        "en": get_extraction_prompt_en(),
+        "vi": get_extraction_prompt_vi(),
+        "ja": get_extraction_prompt_ja(),
+    }
+    
+    system_prompt = system_prompts.get(language, system_prompts["en"])
+    user_prompt = user_prompts.get(language, user_prompts["en"])
+    
+    return system_prompt, user_prompt
 
 
 def image_to_base64(image) -> str:
     """Convert PIL Image to base64 string."""
-    # Handle case where image might be a dict (from datasets)
     if isinstance(image, dict):
-        # If it's already a PIL Image wrapped in dict
         if 'bytes' in image:
             return base64.b64encode(image['bytes']).decode('utf-8')
-        # Otherwise try to get the actual image
         image = image.get('image', image)
     
-    # If it's a PIL Image
     if isinstance(image, Image.Image):
         buffered = BytesIO()
         image.save(buffered, format="PNG")
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
     
-    # If it's already bytes
     if isinstance(image, bytes):
         return base64.b64encode(image).decode('utf-8')
     
@@ -65,14 +138,18 @@ def image_to_base64(image) -> str:
 
 
 async def call_vllm_api_async(
-    session: aiohttp.ClientSession, image, prompt: str
+    session: aiohttp.ClientSession, image, system_prompt: str, user_prompt: str, retry_count: int = 0
 ) -> str:
-    """Call vLLM API with image and prompt asynchronously."""
+    """Call vLLM API with image and prompts asynchronously with retry logic."""
     image_base64 = image_to_base64(image)
 
     payload = {
         "model": MODEL_NAME,
         "messages": [
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": system_prompt}],
+            },
             {
                 "role": "user",
                 "content": [
@@ -80,7 +157,7 @@ async def call_vllm_api_async(
                         "type": "image_url",
                         "image_url": {"url": f"data:image/png;base64,{image_base64}"},
                     },
-                    {"type": "text", "text": prompt},
+                    {"type": "text", "text": user_prompt},
                 ],
             }
         ],
@@ -103,8 +180,14 @@ async def call_vllm_api_async(
             result = await response.json()
             return result["choices"][0]["message"]["content"]
     except Exception as e:
-        print(f"API call failed: {e}")
-        return None
+        if retry_count < MAX_RETRIES:
+            print(f"API call failed (attempt {retry_count + 1}/{MAX_RETRIES}): {e}. Retrying in {RETRY_DELAY}s...")
+            await asyncio.sleep(RETRY_DELAY)
+            return await call_vllm_api_async(session, image, system_prompt, user_prompt, retry_count + 1)
+        else:
+            print(f"API call failed after {MAX_RETRIES} retries: {e}")
+            return None
+
 
 def is_fuzzy_match(s1: str, s2: str, threshold=0.9) -> bool:
     """
@@ -117,20 +200,17 @@ def is_fuzzy_match(s1: str, s2: str, threshold=0.9) -> bool:
     s1 = str(s1).strip().lower()
     s2 = str(s2).strip().lower()
     
-    # Nếu khớp hoàn toàn
     if s1 == s2:
         return True
     
-    # Tính tỉ lệ tương đồng (SequenceMatcher)
     ratio = SequenceMatcher(None, s1, s2).ratio()
     
-    # Logic bổ sung: Nếu chuỗi này chứa chuỗi kia (tránh lỗi do OCR thêm ký tự rác ở cuối)
     if s1 in s2 or s2 in s1:
-        # Nếu độ dài chênh lệch không quá lớn (ví dụ không quá 5 ký tự rác)
         if abs(len(s1) - len(s2)) <= 5:
             return True
 
     return ratio >= threshold
+
 
 def parse_model_output(output: str) -> Dict:
     """Parse model output JSON, handling markdown code blocks."""
@@ -150,7 +230,7 @@ def parse_model_output(output: str) -> Dict:
         return json.loads(cleaned)
     except json.JSONDecodeError as e:
         print(f"JSON parse error: {e}")
-        print(f"Output: {output[:200]}...")
+        print(f"Output: {output}...")
         return None
 
 
@@ -164,17 +244,14 @@ def normalize_value(value: Any) -> Any:
         return float(value)
     return value
 
+
 def normalize_ar_code(value: str) -> str:
     """
     Xử lý đặc thù Mã AR linh hoạt:
     - Cắt bỏ phần đuôi sau dấu gạch dưới (_) hoặc khoảng trắng ( )
-    - Chấp nhận 1 hay nhiều dấu _, dấu cách đều được xử lý
-    Ví dụ: 
-      'AR1830__141' -> 'AR1830'
-      'AR1830_141'  -> 'AR1830'
-      'AR1830 141'  -> 'AR1830'
     """
-    if value is None: return None
+    if value is None: 
+        return None
     s = str(value).strip()
     parts = re.split(r'[_\s]+', s)
     return parts[0].strip() if parts else value
@@ -183,17 +260,11 @@ def normalize_ar_code(value: str) -> str:
 def normalize_so_phieu(value: str) -> str:
     """
     Normalize Số phiếu for comparison by removing all spaces, dots, and dashes.
-    Examples:
-    - "252.104.868.0263" -> "2521048680263"
-    - "252. 104. 868.0263" -> "2521048680263"
-    - "252-104-866-7210" -> "2521048667210"
-    - "25 2-104.866-7210" -> "2521048667210"
     """
     if value is None:
         return None
     
     normalized = value.strip().lower()
-    # Remove all spaces, dots, and dashes
     normalized = normalized.replace(' ', '').replace('.', '').replace('-', '')
     return normalized
 
@@ -201,7 +272,6 @@ def normalize_so_phieu(value: str) -> str:
 def normalize_dia_chi(value: str) -> str:
     """
     Normalize Địa chỉ for fuzzy comparison by removing spaces and converting to lowercase.
-    This helps handle minor OCR errors and spacing differences.
     """
     if value is None:
         return None
@@ -214,20 +284,59 @@ def normalize_dia_chi(value: str) -> str:
 def normalize_date_field(value: str) -> str:
     """
     Normalize date fields by removing parentheses and their content.
-    Examples:
-    - "Ngày chứng từ(dd/mm/yyyy)" -> "Ngày chứng từ"
-    - "Ngày xuất(dd/mm/yyyy)" -> "Ngày xuất"
-    - "Ngày chứng từ(mm/dd/yyyy)" -> "Ngày chứng từ"
     """
     if value is None:
         return None
     
-    # Remove anything in parentheses including the parentheses
     normalized = re.sub(r'\([^)]*\)', '', value)
     return normalized.strip()
 
 
-def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
+def get_field_mappings(language: str) -> Dict[str, str]:
+    """
+    Get field name mappings for different fields based on language.
+    Returns dict mapping field types to actual field names in that language.
+    """
+    mappings = {
+        "en": {
+            "document_number": "document_number",
+            "document_date": "document_date",
+            "export_date": "export_date",
+            "receiving_warehouse": "receiving_warehouse",
+            "address": "address",
+            "ar_code": "ar_code",
+            "product_code": "product_code",
+            "unit": "unit",
+            "quantity": "quantity",
+        },
+        "vi": {
+            "document_number": "Số phiếu",
+            "document_date": "Ngày chứng từ",
+            "export_date": "Ngày xuất",
+            "receiving_warehouse": "Kho nhận",
+            "address": "Địa chỉ",
+            "ar_code": "Mã AR",
+            "product_code": "Mã FG",
+            "unit": "Đvt",
+            "quantity": "Số lượng",
+        },
+        "ja": {
+            "document_number": "伝票番号",
+            "document_date": "伝票日付",
+            "export_date": "出庫日付",
+            "receiving_warehouse": "入庫倉庫",
+            "address": "住所",
+            "ar_code": "ARコード",
+            "product_code": "製品コード",
+            "unit": "単位",
+            "quantity": "数量",
+        }
+    }
+    
+    return mappings.get(language, mappings["en"])
+
+
+def compare_metadata(pred_meta: Dict, gt_meta: Dict, language: str) -> Dict[str, Dict]:
     """Compare metadata fields between prediction and ground truth."""
     results = {}
 
@@ -236,8 +345,15 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
     if isinstance(pred_meta, list):
         pred_meta = pred_meta[0] if pred_meta else {}
 
-    fuzzy_fields = ["Kho nhận", "Địa chỉ"]
-    date_fields = ["Ngày chứng từ", "Ngày xuất"]  # Base names without (dd/mm/yyyy)
+    # Get field mappings for this language
+    field_map = get_field_mappings(language)
+    
+    # Define fuzzy and date fields using language-specific names
+    fuzzy_fields = [field_map["receiving_warehouse"], field_map["address"]]
+    date_field_base_names = [
+        normalize_date_field(field_map["document_date"]),
+        normalize_date_field(field_map["export_date"])
+    ]
 
     for field in gt_meta.keys():
         pred_original = pred_meta.get(field)
@@ -245,30 +361,28 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
         
         correct = False
         
-        # Normalize field name for comparison (remove parentheses part)
         normalized_field = normalize_date_field(field)
         
-        # 1. Xử lý Mã AR
-        if field == "Mã AR":
+        # 1. Xử lý AR code
+        if field == field_map["ar_code"]:
             pred_val = normalize_ar_code(pred_original)
             gt_val = normalize_ar_code(gt_original)
             correct = (pred_val == gt_val)
             
-        # 2. Xử lý Số phiếu
-        elif field == "Số phiếu":
+        # 2. Xử lý document number
+        elif field == field_map["document_number"]:
             pred_val = normalize_so_phieu(pred_original)
             gt_val = normalize_so_phieu(gt_original)
             correct = (pred_val == gt_val)
             
-        # 3. Xử lý Kho nhận và Địa chỉ (Fuzzy Match)
+        # 3. Xử lý Fuzzy fields (warehouse, address)
         elif field in fuzzy_fields:
             p_norm = normalize_dia_chi(pred_original)
             g_norm = normalize_dia_chi(gt_original)
             correct = is_fuzzy_match(p_norm, g_norm, threshold=0.85)
             
-        # 4. Xử lý các trường ngày - tìm trong pred_meta với tên field có thể khác
-        elif normalized_field in date_fields:
-            # Tìm field tương ứng trong prediction (có thể có hoặc không có phần ngoặc)
+        # 4. Xử lý các trường ngày
+        elif normalized_field in date_field_base_names:
             pred_val = None
             for pred_field_name, pred_field_value in pred_meta.items():
                 if normalize_date_field(pred_field_name) == normalized_field:
@@ -276,8 +390,6 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
                     break
             
             gt_val = normalize_value(gt_original)
-            
-            # Chỉ đúng khi cả hai giá trị bằng nhau (bao gồm cả trường hợp đều None)
             correct = (pred_val == gt_val)
                 
         # 5. Các trường còn lại
@@ -299,39 +411,44 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict) -> Dict[str, Dict]:
 
     return results
 
+
 def compare_table_rows(
-    pred_rows: List[Dict], gt_rows: List[Dict]
+    pred_rows: List[Dict], gt_rows: List[Dict], language: str
 ) -> Tuple[int, int, List[Dict]]:
     """
     Compare table rows between prediction and ground truth.
-    A row is correct if:
-    - Mã FG matches exactly (after normalization)
-    - Số lượng matches exactly
+    A row is correct if product_code and quantity match exactly.
     """
     if not gt_rows:
         return 0, 0, []
+
+    field_map = get_field_mappings(language)
+    product_code_field = field_map["product_code"]
+    quantity_field = field_map["quantity"]
 
     total_rows = len(gt_rows)
     correct_rows = 0
     row_details = []
 
-    pred_by_fg = {normalize_value(row.get("Mã FG")): row for row in (pred_rows or [])}
+    pred_by_code = {
+        normalize_value(row.get(product_code_field)): row 
+        for row in (pred_rows or [])
+    }
 
     for gt_row in gt_rows:
-        gt_fg = normalize_value(gt_row.get("Mã FG"))
-        gt_qty = normalize_value(gt_row.get("Số lượng"))
+        gt_code = normalize_value(gt_row.get(product_code_field))
+        gt_qty = normalize_value(gt_row.get(quantity_field))
 
-        row_detail = {"gt_fg": gt_fg, "match": False, "errors": []}
+        row_detail = {"gt_code": gt_code, "match": False, "errors": []}
 
-        if gt_fg not in pred_by_fg:
-            row_detail["errors"].append(f"Missing FG: {gt_fg}")
+        if gt_code not in pred_by_code:
+            row_detail["errors"].append(f"Missing product: {gt_code}")
             row_details.append(row_detail)
             continue
 
-        pred_row = pred_by_fg[gt_fg]
-        pred_qty = normalize_value(pred_row.get("Số lượng"))
+        pred_row = pred_by_code[gt_code]
+        pred_qty = normalize_value(pred_row.get(quantity_field))
 
-        # Check if quantities match
         qty_match = (gt_qty == pred_qty) if (gt_qty is not None and pred_qty is not None) else False
 
         if not qty_match:
@@ -352,78 +469,148 @@ async def evaluate_single_async(
     session: aiohttp.ClientSession,
     image,
     ground_truth: str,
-    prompt: str,
     source_file: str = None,
     page_number: int = None,
+    retry_count: int = 0,
 ) -> Dict:
-    """Evaluate a single example asynchronously."""
+    """Evaluate a single example asynchronously with retry logic."""
     try:
         gt_data = json.loads(ground_truth)
-    except:
+    except Exception as e:
+        print(f"Failed to parse ground truth: {e}")
         return None
+
+    # Detect language from ground truth keys
+    language = detect_language_from_keys(gt_data)
+    
+    # Get appropriate prompts for the detected language
+    system_prompt, user_prompt = get_prompts_for_language(language)
 
     # Check if ground truth has table_rows
     gt_has_table_rows = bool(gt_data.get("table_rows"))
-    
-    # Skip evaluation if label doesn't have table_rows
-    if not gt_has_table_rows:
-        return {
-            "success": False,
-            "skipped": True,
-            "reason": "No table_rows in ground truth",
-            "metadata_scores": {},
-            "table_rows_correct": 0,
-            "table_rows_total": 0,
-            "model_response": None,
-            "label": gt_data,
-            "source_file": source_file,
-            "page_number": page_number,
-        }
 
-    model_output = await call_vllm_api_async(session, image, prompt)
-    pred_data = parse_model_output(model_output)
+    try:
+        model_output = await call_vllm_api_async(session, image, system_prompt, user_prompt)
+        
+        if model_output is None:
+            # Retry the entire evaluation if API call failed
+            if retry_count < MAX_RETRIES:
+                print(f"Evaluation failed (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}. Retrying...")
+                await asyncio.sleep(RETRY_DELAY)
+                return await evaluate_single_async(session, image, ground_truth, source_file, page_number, retry_count + 1)
+            else:
+                return {
+                    "success": False,
+                    "skipped": False,
+                    "error": "API call failed after retries",
+                    "metadata_scores": {},
+                    "table_rows_correct": 0,
+                    "table_rows_total": len(gt_data.get("table_rows", [])) if gt_has_table_rows else 0,
+                    "model_response": None,
+                    "label": gt_data,
+                    "source_file": source_file,
+                    "page_number": page_number,
+                    "language": language,
+                    "gt_has_table_rows": gt_has_table_rows,
+                }
+        
+        pred_data = parse_model_output(model_output)
 
-    if pred_data is None:
+        if pred_data is None:
+            # Retry if JSON parsing failed
+            if retry_count < MAX_RETRIES:
+                print(f"JSON parsing failed (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}. Retrying...")
+                await asyncio.sleep(RETRY_DELAY)
+                return await evaluate_single_async(session, image, ground_truth, source_file, page_number, retry_count + 1)
+            else:
+                return {
+                    "success": False,
+                    "skipped": False,
+                    "error": "JSON parsing failed after retries",
+                    "metadata_scores": {},
+                    "table_rows_correct": 0,
+                    "table_rows_total": len(gt_data.get("table_rows", [])) if gt_has_table_rows else 0,
+                    "model_response": model_output,
+                    "label": gt_data,
+                    "source_file": source_file,
+                    "page_number": page_number,
+                    "language": language,
+                    "gt_has_table_rows": gt_has_table_rows,
+                }
+
+        # Evaluate metadata
+        metadata_scores = compare_metadata(
+            pred_data.get("metadata", {}), 
+            gt_data.get("metadata", {}),
+            language
+        )
+
+        # Check if model correctly predicted no table_rows when GT has none
+        pred_has_table_rows = bool(pred_data.get("table_rows"))
+        table_structure_correct = (gt_has_table_rows == pred_has_table_rows)
+
+        # Evaluate table rows only if GT has table_rows
+        if gt_has_table_rows:
+            rows_correct, rows_total, row_details = compare_table_rows(
+                pred_data.get("table_rows", []), 
+                gt_data.get("table_rows", []),
+                language
+            )
+        else:
+            # GT has no table_rows - check if model also didn't generate any
+            rows_correct = 0
+            rows_total = 0
+            row_details = []
+            
+            # If model incorrectly generated table_rows when GT has none
+            if pred_has_table_rows:
+                row_details.append({
+                    "error": f"Model incorrectly generated {len(pred_data.get('table_rows', []))} table rows when GT has none"
+                })
+
         return {
-            "success": False,
+            "success": True,
             "skipped": False,
-            "metadata_scores": {},
-            "table_rows_correct": 0,
-            "table_rows_total": len(gt_data.get("table_rows", [])),
-            "model_response": model_output,
+            "metadata_scores": metadata_scores,
+            "table_rows_correct": rows_correct,
+            "table_rows_total": rows_total,
+            "row_details": row_details,
+            "model_response": pred_data,
             "label": gt_data,
             "source_file": source_file,
             "page_number": page_number,
+            "language": language,
+            "gt_has_table_rows": gt_has_table_rows,
+            "pred_has_table_rows": pred_has_table_rows,
+            "table_structure_correct": table_structure_correct,
         }
-
-    # Evaluate metadata
-    metadata_scores = compare_metadata(
-        pred_data.get("metadata", {}), gt_data.get("metadata", {})
-    )
-
-    # Evaluate table rows
-    rows_correct, rows_total, row_details = compare_table_rows(
-        pred_data.get("table_rows", []), gt_data.get("table_rows", [])
-    )
-
-    return {
-        "success": True,
-        "skipped": False,
-        "metadata_scores": metadata_scores,
-        "table_rows_correct": rows_correct,
-        "table_rows_total": rows_total,
-        "row_details": row_details,
-        "model_response": pred_data,
-        "label": gt_data,
-        "source_file": source_file,
-        "page_number": page_number,
-    }
+    except Exception as e:
+        # Retry on any unexpected error
+        if retry_count < MAX_RETRIES:
+            print(f"Unexpected error (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}: {e}. Retrying...")
+            await asyncio.sleep(RETRY_DELAY)
+            return await evaluate_single_async(session, image, ground_truth, source_file, page_number, retry_count + 1)
+        else:
+            print(f"Evaluation failed after {MAX_RETRIES} retries for {source_file}: {e}")
+            return {
+                "success": False,
+                "skipped": False,
+                "error": str(e),
+                "metadata_scores": {},
+                "table_rows_correct": 0,
+                "table_rows_total": 0,
+                "model_response": None,
+                "label": gt_data if 'gt_data' in locals() else None,
+                "source_file": source_file,
+                "page_number": page_number,
+                "language": language if 'language' in locals() else None,
+                "gt_has_table_rows": gt_has_table_rows if 'gt_has_table_rows' in locals() else None,
+            }
 
 
 async def process_batch(
     session: aiohttp.ClientSession,
     batch_examples: List[Dict],
-    prompt: str,
     pbar: atqdm,
 ) -> List[Dict]:
     """Process a batch of examples concurrently."""
@@ -433,7 +620,6 @@ async def process_batch(
             session,
             example["image"],
             example["text"],
-            prompt,
             example.get("source_file"),
             example.get("page_number"),
         )
@@ -454,12 +640,15 @@ async def process_batch(
     return valid_results
 
 
-async def evaluate_dataset_async(dataset, prompt: str):
+async def evaluate_dataset_async(dataset):
     """Evaluate entire dataset with concurrent requests."""
     total_examples = len(dataset)
     all_results = []
 
-    connector = aiohttp.TCPConnector(limit=MAX_CONCURRENT_REQUESTS, limit_per_host=MAX_CONCURRENT_REQUESTS)
+    connector = aiohttp.TCPConnector(
+        limit=MAX_CONCURRENT_REQUESTS, 
+        limit_per_host=MAX_CONCURRENT_REQUESTS
+    )
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
@@ -478,7 +667,7 @@ async def evaluate_dataset_async(dataset, prompt: str):
                 }
                 batch.append(example)
             
-            batch_results = await process_batch(session, batch, prompt, pbar)
+            batch_results = await process_batch(session, batch, pbar)
             all_results.extend(batch_results)
 
         pbar.close()
@@ -499,10 +688,8 @@ def main():
     print(f"Columns: {dataset.column_names}")
     print(f"Concurrent requests: {MAX_CONCURRENT_REQUESTS}")
 
-    prompt = get_extraction_prompt_vi()
-
     print("\nStarting evaluation...")
-    results = asyncio.run(evaluate_dataset_async(dataset, prompt))
+    results = asyncio.run(evaluate_dataset_async(dataset))
 
     total_examples = len(dataset)
     successful_parses = 0
@@ -510,30 +697,63 @@ def main():
     metadata_field_scores = defaultdict(list)
     total_rows_correct = 0
     total_rows_count = 0
+    table_structure_correct_count = 0
+    table_structure_total_count = 0
+    
+    # Track stats by language
+    language_stats = defaultdict(lambda: {
+        "total": 0,
+        "successful": 0,
+        "metadata_scores": defaultdict(list),
+        "rows_correct": 0,
+        "rows_total": 0,
+        "table_structure_correct": 0,
+        "table_structure_total": 0,
+    })
 
     for idx, result in enumerate(results):
         if result is None:
-            print(f"\n[{idx}] Ground truth parsing failed")
+            print(f"\n[{idx}] Evaluation completely failed")
             continue
 
-        # Skip examples without table_rows in ground truth
         if result.get("skipped", False):
             skipped_examples += 1
             continue
 
+        language = result.get("language", "unknown")
+        language_stats[language]["total"] += 1
+
+        # Track table structure accuracy
+        if "table_structure_correct" in result:
+            table_structure_total_count += 1
+            language_stats[language]["table_structure_total"] += 1
+            if result["table_structure_correct"]:
+                table_structure_correct_count += 1
+                language_stats[language]["table_structure_correct"] += 1
+
         if result["success"]:
             successful_parses += 1
+            language_stats[language]["successful"] += 1
 
             for field, score_info in result["metadata_scores"].items():
                 correct = score_info["correct"]
                 metadata_field_scores[field].append(1 if correct else 0)
+                language_stats[language]["metadata_scores"][field].append(1 if correct else 0)
 
             rows_correct = result["table_rows_correct"]
             rows_total = result["table_rows_total"]
-            total_rows_correct += rows_correct
-            total_rows_count += rows_total
+            
+            # Only count rows if GT has table_rows
+            if result.get("gt_has_table_rows", True):
+                total_rows_correct += rows_correct
+                total_rows_count += rows_total
+                language_stats[language]["rows_correct"] += rows_correct
+                language_stats[language]["rows_total"] += rows_total
+        else:
+            # Count failed evaluations
+            if "error" in result:
+                print(f"\n[{idx}] Failed: {result.get('error')} - {result.get('source_file')}")
 
-    # Calculate evaluated examples (excluding skipped)
     evaluated_examples = total_examples - skipped_examples
 
     print("\n" + "=" * 80)
@@ -543,10 +763,13 @@ def main():
     print(f"Skipped examples (no table_rows in GT): {skipped_examples}")
     print(f"Evaluated examples: {evaluated_examples}")
     print(
-        f"Successful parses: {successful_parses}/{evaluated_examples} ({100 * successful_parses / evaluated_examples:.1f}%)" if evaluated_examples > 0 else "Successful parses: 0/0"
+        f"Successful parses: {successful_parses}/{evaluated_examples} "
+        f"({100 * successful_parses / evaluated_examples:.1f}%)" 
+        if evaluated_examples > 0 else "Successful parses: 0/0"
     )
 
-    print("\n--- METADATA FIELD ACCURACY ---")
+    # Print overall metadata accuracy
+    print("\n--- OVERALL METADATA FIELD ACCURACY ---")
     for field in sorted(metadata_field_scores.keys()):
         scores = metadata_field_scores[field]
         accuracy = np.mean(scores) * 100
@@ -559,7 +782,8 @@ def main():
         )
         print(f"\n  {'Overall Metadata Accuracy':30s}: {overall_metadata:5.1f}%")
 
-    print("\n--- TABLE ROWS ACCURACY ---")
+    # Print overall table rows accuracy
+    print("\n--- OVERALL TABLE ROWS ACCURACY ---")
     if total_rows_count > 0:
         row_accuracy = 100 * total_rows_correct / total_rows_count
         print(
@@ -567,36 +791,72 @@ def main():
         )
     else:
         print("  No table rows to evaluate")
+    
+    # Print table structure accuracy (whether model correctly detected presence/absence of table)
+    print("\n--- TABLE STRUCTURE DETECTION ACCURACY ---")
+    if table_structure_total_count > 0:
+        structure_accuracy = 100 * table_structure_correct_count / table_structure_total_count
+        print(
+            f"  Correct structure detection: {table_structure_correct_count}/{table_structure_total_count} ({structure_accuracy:.1f}%)"
+        )
+        print("  (Whether model correctly identified if document has table_rows or not)")
+    else:
+        print("  No structure detection to evaluate")
 
+    # Print per-language statistics
+    print("\n" + "=" * 80)
+    print("PER-LANGUAGE STATISTICS")
+    print("=" * 80)
+    
+    for lang in sorted(language_stats.keys()):
+        stats = language_stats[lang]
+        print(f"\n--- {lang.upper()} ---")
+        print(f"  Total: {stats['total']}")
+        print(f"  Successful: {stats['successful']}/{stats['total']} "
+              f"({100 * stats['successful'] / stats['total']:.1f}%)" 
+              if stats['total'] > 0 else "  Successful: 0/0")
+        
+        if stats['metadata_scores']:
+            print(f"\n  Metadata accuracy:")
+            for field in sorted(stats['metadata_scores'].keys()):
+                scores = stats['metadata_scores'][field]
+                accuracy = np.mean(scores) * 100
+                print(f"    {field:30s}: {accuracy:5.1f}% ({sum(scores)}/{len(scores)})")
+        
+        if stats['rows_total'] > 0:
+            row_acc = 100 * stats['rows_correct'] / stats['rows_total']
+            print(f"\n  Table rows accuracy: {stats['rows_correct']}/{stats['rows_total']} ({row_acc:.1f}%)")
+        
+        if stats['table_structure_total'] > 0:
+            structure_acc = 100 * stats['table_structure_correct'] / stats['table_structure_total']
+            print(f"  Table structure detection: {stats['table_structure_correct']}/{stats['table_structure_total']} ({structure_acc:.1f}%)")
+
+    # Save results
     output_file = "evaluation_results.json"
     simplified_results = []
     for i, r in enumerate(results):
         if r is not None:
-            # Only save results that have errors
             has_error = False
             
-            # Check if parsing failed
             if not r.get("success", False) and not r.get("skipped", False):
                 has_error = True
             
-            # Check if any metadata field is incorrect
             if r.get("success", False):
                 for field, score_info in r.get("metadata_scores", {}).items():
                     if not score_info["correct"]:
                         has_error = True
                         break
                 
-                # Check if any table rows are incorrect
                 if r.get("table_rows_total", 0) > 0:
                     if r.get("table_rows_correct", 0) < r.get("table_rows_total", 0):
                         has_error = True
             
-            # Only append if there's an error
             if has_error:
                 simplified_results.append(
                     {
                         "source_file": r.get("source_file", f"example_{i}"),
                         "page_number": r.get("page_number"),
+                        "language": r.get("language"),
                         "model_response": r.get("model_response"),
                         "label": r.get("label"),
                         "success": r.get("success", False),
@@ -605,6 +865,9 @@ def main():
                         "table_rows_correct": r.get("table_rows_correct", 0),
                         "table_rows_total": r.get("table_rows_total", 0),
                         "row_details": r.get("row_details", []),
+                        "gt_has_table_rows": r.get("gt_has_table_rows"),
+                        "pred_has_table_rows": r.get("pred_has_table_rows"),
+                        "table_structure_correct": r.get("table_structure_correct"),
                     }
                 )
 
@@ -623,6 +886,24 @@ def main():
                     "table_rows_accuracy": 100 * total_rows_correct / total_rows_count
                     if total_rows_count > 0
                     else 0,
+                    "table_structure_accuracy": 100 * table_structure_correct_count / table_structure_total_count
+                    if table_structure_total_count > 0
+                    else 0,
+                    "language_breakdown": {
+                        lang: {
+                            "total": stats["total"],
+                            "successful": stats["successful"],
+                            "metadata_accuracy": {
+                                k: np.mean(v) * 100 
+                                for k, v in stats["metadata_scores"].items()
+                            } if stats["metadata_scores"] else {},
+                            "table_rows_accuracy": 100 * stats["rows_correct"] / stats["rows_total"]
+                            if stats["rows_total"] > 0 else 0,
+                            "table_structure_accuracy": 100 * stats["table_structure_correct"] / stats["table_structure_total"]
+                            if stats["table_structure_total"] > 0 else 0,
+                        }
+                        for lang, stats in language_stats.items()
+                    }
                 },
                 "errors": simplified_results,
             },
