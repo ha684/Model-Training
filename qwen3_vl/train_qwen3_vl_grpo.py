@@ -1,24 +1,19 @@
 # qwen3_vl/train_qwen3_vl_grpo.py
 #!/usr/bin/env python3
-"""
-Fine-tune Qwen3-VL Vision Language Model using GRPO/GSPO Reinforcement Learning
-Usage:
-    # Single GPU
-    python train_qwen3_vl_grpo.py
-
-    # Multi-GPU (2 GPUs)
-    torchrun --nproc_per_node=2 train_qwen3_vl_grpo.py
-
-    # Multi-GPU with custom settings
-    torchrun --nproc_per_node=4 train_qwen3_vl_grpo.py --batch_size 1 --epochs 0.5
-"""
-
 import argparse
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Any, Tuple
+
+from unsloth import FastVisionModel
+import mlflow
+import torch.distributed as dist
+from datasets import load_dataset
+from transformers import AutoProcessor
+from transformers.trainer_utils import get_last_checkpoint
+from trl import GRPOConfig, GRPOTrainer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -29,21 +24,15 @@ if not os.path.exists(LOCAL_CACHE_DIR):
     os.makedirs(LOCAL_CACHE_DIR)
     print(f"📁 Created local cache directory: {LOCAL_CACHE_DIR}")
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["UNSLOTH_STABLE_DOWNLOADS"] = "1"
 os.environ["HF_HUB_DISABLE_XET"] = "1"
-
-os.environ["MLFLOW_TRACKING_USERNAME"]="robotpro682004"
-os.environ["MLFLOW_TRACKING_PASSWORD"]="59d3b474fda55ef9e051969b30b778bc42763e2d"
+os.environ["MLFLOW_TRACKING_USERNAME"] = "robotpro682004"
+os.environ["MLFLOW_TRACKING_PASSWORD"] = "59d3b474fda55ef9e051969b30b778bc42763e2d"
 os.environ["HF_HOME"] = LOCAL_CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "datasets")
 os.environ["HF_HUB_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "hub")
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
-from unsloth import FastVisionModel
-import mlflow
-import torch.distributed as dist
-from datasets import load_dataset
 from qwen3_vl.reward_functions import (
     format_reward_func,
     metadata_reward_func,
@@ -56,9 +45,6 @@ from qwen3_vl.training_utils import (
     setup_mlflow,
 )
 from qwen3_vl.utils import LazyVisionGRPODataset
-from transformers import AutoProcessor
-from transformers.trainer_utils import get_last_checkpoint
-from trl import GRPOConfig, GRPOTrainer
 
 
 def parse_args():
@@ -249,11 +235,6 @@ def build_grpo_trainer(
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
-        # callbacks=[
-        #     EarlyStoppingCallback(
-        #         early_stopping_patience=5, early_stopping_threshold=0.0
-        #     )
-        # ],
     )
 
     return trainer
@@ -281,14 +262,12 @@ def main():
         print("=" * 70)
         print()
 
-    # --- LOGIC TÌM CHECKPOINT ---
     last_checkpoint = None
     if os.path.isdir(args.output_dir):
         last_checkpoint = get_last_checkpoint(args.output_dir)
         if last_checkpoint is not None and rank == 0:
             print(f"♻️  Found checkpoint: {last_checkpoint}")
             print("🚀 Resuming GRPO training from the latest checkpoint...")
-    # ----------------------------
 
     if rank == 0:
         print("🚀 Initializing model and tokenizer...")
@@ -314,7 +293,6 @@ def main():
     interrupted = False
 
     try:
-        # Truyền resume_from_checkpoint vào hàm train
         trainer_stats = trainer.train(resume_from_checkpoint=last_checkpoint)
 
     except KeyboardInterrupt:
@@ -325,7 +303,6 @@ def main():
             print("💾 Saving current state to checkpoint before exiting...")
             print("!" * 80)
 
-            # Lưu model và state để resume sau này
             trainer.save_model(args.output_dir)
             trainer.save_state()
 
@@ -358,7 +335,6 @@ def main():
             tokenizer.save_pretrained(args.model_save_path)
             print("✅ Model saved successfully!")
 
-        # Push to Hub
         if args.push_to_hub and args.hub_model_id and rank == 0:
             hf_token = args.hf_token or os.environ.get("HF_TOKEN")
             if not hf_token:
@@ -389,7 +365,6 @@ def main():
                     except Exception as e:
                         print(f"⚠️ Failed to merge and push to hub: {e}")
                 else:
-                    # Just push LoRA adapter (original behavior)
                     print(
                         f"🚀 Pushing LoRA adapter to Hugging Face Hub: {args.hub_model_id}..."
                     )
@@ -404,16 +379,12 @@ def main():
         print("📤 Uploading extra artifacts to MLflow...")
 
         def upload_and_cleanup():
-            # Chỉ log metrics, không upload artifacts nặng và không xoá local
             if trainer_stats:
                 mlflow.log_metrics(
                     {"training_loss": trainer_stats.training_loss}
                     if hasattr(trainer_stats, "training_loss")
                     else {}
                 )
-
-            # if args.save_model:
-            #     mlflow.log_artifacts(args.model_save_path, artifact_path="lora_adapter")
 
             print("✅ Metrics logged. Artifacts kept locally.")
             print("💾 Files kept locally. No upload performed.")

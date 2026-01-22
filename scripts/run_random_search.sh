@@ -1,87 +1,99 @@
 #!/bin/bash
-# Random Search HPO Script
-# This script runs hyperparameter optimization using random search
-# Each trial runs for a limited number of steps (not full epochs) to quickly explore the search space
+set -euo pipefail
+
+# Optuna HPO Script (with MLflow + pruning-ready metric JSONL)
 #
-# Usage: bash run_random_search.sh [num_trials] [ngrok_url]
-# Example: bash run_random_search.sh 15 https://your-ngrok-url.ngrok.io
+# Usage:
+#   bash run_optuna_hpo.sh [num_trials] [mlflow_uri] [num_gpus] [dataset_name] [hf_token]
+#
+# Example:
+#   bash run_optuna_hpo.sh 15 http://localhost:5000 2 ha684/senko1
 
 NUM_TRIALS=${1:-10}
-NGROK_URL=${2:-"http://localhost:5000"}
+MLFLOW_URI=${2:-"http://localhost:5000"}
 NUM_GPUS=${3:-2}
 DATASET_NAME=${4:-"ha684/senko1"}
 HF_TOKEN=${5:-""}
 
+HPO_FILE=${HPO_FILE:-"hpo_runner.py"}
+TRAIN_SCRIPT=${TRAIN_SCRIPT:-"qwen3-vl/train_qwen3_vl_ddp.py"}
+STUDY_NAME=${STUDY_NAME:-"qwen3_vl_optimization"}
+EXPERIMENT_NAME=${EXPERIMENT_NAME:-"qwen3_vl_optuna"}
+OUTPUT_ROOT=${OUTPUT_ROOT:-"outputs/hpo"}
+
+MAX_STEPS=${MAX_STEPS:-30}
+EVAL_STEPS=${EVAL_STEPS:-10}
+LOGGING_STEPS=${LOGGING_STEPS:-1}
+BATCH_SIZE=${BATCH_SIZE:-2}
+WARMUP_STEPS=${WARMUP_STEPS:-5}
+
 echo "╔════════════════════════════════════════════════════════════════╗"
-echo "║         🔍 Random Search Hyperparameter Optimization          ║"
+echo "║          🧪 Optuna Hyperparameter Optimization (HPO)          ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 echo "Configuration:"
-echo "  🎲 Number of trials: $NUM_TRIALS"
-echo "  🌐 MLflow URI: $NGROK_URL"
-echo "  🖥️  Number of GPUs: $NUM_GPUS"
-echo "  📦 Dataset: $DATASET_NAME"
+echo "  🔢 Trials:            $NUM_TRIALS"
+echo "  🌐 MLflow URI:        $MLFLOW_URI"
+echo "  🧪 MLflow Experiment: $EXPERIMENT_NAME"
+echo "  🧠 Study name:        $STUDY_NAME"
+echo "  🖥️  GPUs:             $NUM_GPUS"
+echo "  📦 Dataset:           $DATASET_NAME"
+echo "  📁 Output root:       $OUTPUT_ROOT"
+echo "  ⏱️  max_steps:         $MAX_STEPS"
+echo "  🧪 eval_steps:        $EVAL_STEPS"
 echo ""
 
-# Check if Python is available
+# Basic checks
 if ! command -v python &> /dev/null; then
-    echo "❌ Error: Python not found. Please install Python first."
-    exit 1
+  echo "❌ Error: python not found."
+  exit 1
 fi
 
-# Check if hpo_runner.py exists
-if [ ! -f "hpo_runner.py" ]; then
-    echo "❌ Error: hpo_runner.py not found in current directory"
-    exit 1
+if [ ! -f "$HPO_FILE" ]; then
+  echo "❌ Error: $HPO_FILE not found in current directory."
+  exit 1
 fi
 
-# Check if train_qwen3_vl_ddp.py exists
-if [ ! -f "train_qwen3_vl_ddp.py" ]; then
-    echo "❌ Error: train_qwen3_vl_ddp.py not found in current directory"
-    exit 1
+if [ ! -f "$TRAIN_SCRIPT" ]; then
+  echo "❌ Error: training script not found: $TRAIN_SCRIPT"
+  exit 1
 fi
 
-# Create output directory for HPO results
-mkdir -p outputs/hpo
+mkdir -p "$OUTPUT_ROOT"
 
-# Run the HPO
-echo "🚀 Starting random search..."
+echo "🚀 Starting Optuna HPO..."
 echo ""
+
+COMMON_ARGS=(
+  --num_trials "$NUM_TRIALS"
+  --mlflow_uri "$MLFLOW_URI"
+  --mlflow_experiment "$EXPERIMENT_NAME"
+  --study_name "$STUDY_NAME"
+  --num_gpus "$NUM_GPUS"
+  --dataset_name "$DATASET_NAME"
+  --train_script "$TRAIN_SCRIPT"
+  --output_root "$OUTPUT_ROOT"
+  --max_steps "$MAX_STEPS"
+  --eval_steps "$EVAL_STEPS"
+  --logging_steps "$LOGGING_STEPS"
+  --batch_size "$BATCH_SIZE"
+  --warmup_steps "$WARMUP_STEPS"
+)
 
 if [ -z "$HF_TOKEN" ]; then
-    python hpo_runner.py \
-        --num_trials $NUM_TRIALS \
-        --ngrok_url "$NGROK_URL" \
-        --num_gpus $NUM_GPUS \
-        --dataset_name "$DATASET_NAME"
+  python "$HPO_FILE" "${COMMON_ARGS[@]}"
 else
-    python hpo_runner.py \
-        --num_trials $NUM_TRIALS \
-        --ngrok_url "$NGROK_URL" \
-        --num_gpus $NUM_GPUS \
-        --dataset_name "$DATASET_NAME" \
-        --hf_token "$HF_TOKEN"
+  python "$HPO_FILE" "${COMMON_ARGS[@]}" --hf_token "$HF_TOKEN"
 fi
-
-EXIT_CODE=$?
 
 echo ""
 echo "════════════════════════════════════════════════════════════════"
-
-if [ $EXIT_CODE -eq 0 ]; then
-    echo "✅ Random search completed successfully!"
-    echo ""
-    echo "Next steps:"
-    echo "  1. Open MLflow UI: $NGROK_URL"
-    echo "  2. Navigate to experiment: 'qwen3_vl_random_search'"
-    echo "  3. Sort runs by 'metrics.eval_loss' (ascending)"
-    echo "  4. Select the best performing model"
-    echo "  5. Use the hyperparameters from that run for full training"
-    echo ""
-    echo "📊 Tip: Look for runs with lowest eval_loss and stable training"
-else
-    echo "❌ Random search failed or was interrupted"
-    echo "   Check the logs above for errors"
-fi
-
+echo "✅ HPO completed!"
+echo ""
+echo "Next steps:"
+echo "  1) Open MLflow UI: $MLFLOW_URI"
+echo "  2) Experiment:     $EXPERIMENT_NAME"
+echo "  3) Sort by metric: final_eval_loss (or eval_loss)"
+echo "  4) Check tags:     optuna.state, optuna.trial_number"
+echo "  5) Take best params from the best run and do full training"
 echo "════════════════════════════════════════════════════════════════"

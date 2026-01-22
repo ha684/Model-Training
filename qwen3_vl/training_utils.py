@@ -6,6 +6,7 @@ Used by both SFT and GRPO/RL training scripts
 
 import argparse
 import os
+import json
 from typing import Any, Dict, Tuple
 
 import mlflow
@@ -13,7 +14,7 @@ import torch
 from torch.optim import AdamW
 from transformers import get_cosine_schedule_with_warmup
 from unsloth import FastVisionModel
-
+from transformers import TrainerCallback
 
 def get_gpu_precision_settings() -> Dict[str, bool]:
     """
@@ -158,7 +159,7 @@ def parse_common_args(parser: argparse.ArgumentParser = None) -> argparse.Argume
         help="Repository ID on HF (e.g., username/qwen-finetuned)",
     )
     parser.add_argument(
-        "--metric_file", type=str, default=None, help="File path to save the final metric"
+        "--metric_file", type=str, default="metric.jsonl", help="File path to save the final metric"
     )
     parser.add_argument(
         "--eval_batch_size",
@@ -388,3 +389,48 @@ def create_custom_optimizer_and_scheduler(
     )
 
     return optimizer, scheduler
+
+class MetricFileAndMLflowCallback(TrainerCallback):
+    """
+    Ghi metric ra JSONL mỗi lần evaluation để Optuna coordinator có thể poll và prune.
+    Đồng thời log metric vào MLflow (attach vào run do coordinator tạo).
+    Chỉ rank0 thực hiện.
+    """
+
+    def __init__(self, metric_file: str | None, enabled: bool = True):
+        self.metric_file = metric_file
+        self.enabled = enabled
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if not self.enabled:
+            return control
+        if metrics is None:
+            return control
+
+        # Chỉ rank0
+        if int(os.environ.get("RANK", "0")) != 0:
+            return control
+
+        eval_loss = metrics.get("eval_loss", None)
+        if eval_loss is None:
+            return control
+
+        step = int(getattr(state, "global_step", 0))
+
+        # 1) Append JSONL
+        if self.metric_file:
+            try:
+                os.makedirs(os.path.dirname(self.metric_file), exist_ok=True)
+                with open(self.metric_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"step": step, "eval_loss": float(eval_loss)}) + "\n")
+            except Exception as e:
+                print(f"⚠️ Failed to write metric jsonl: {e}")
+
+        # 2) Log MLflow metric (nếu đang active run)
+        try:
+            if mlflow.active_run():
+                mlflow.log_metric("eval_loss", float(eval_loss), step=step)
+        except Exception as e:
+            print(f"⚠️ Failed to log mlflow metric: {e}")
+
+        return control

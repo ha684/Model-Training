@@ -44,6 +44,7 @@ from qwen3_vl.training_utils import (
     init_model,
     parse_common_args,
     setup_mlflow,
+    MetricFileAndMLflowCallback,
 )
 
 from qwen3_vl.utils import LazyVisionDataset
@@ -167,9 +168,8 @@ def build_trainer(
         eval_dataset=eval_dataset,
         args=training_args,
         callbacks=[
-            EarlyStoppingCallback(
-                early_stopping_patience=3, early_stopping_threshold=1e-4
-            )
+            EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=1e-4),
+            MetricFileAndMLflowCallback(metric_file=args.metric_file, enabled=(args.metric_file is not None)),
         ],
         optimizers=(optimizer, scheduler),
     )
@@ -197,15 +197,22 @@ def main():
         print(f"💾 Local Cache: {os.environ['HF_HOME']}") 
         print("=" * 70)
         print()
-
-    # --- LOGIC TÌM CHECKPOINT ---
+        
+    run_id = os.environ.get("MLFLOW_RUN_ID")
+    if args.report_to == "mlflow" and rank == 0 and run_id:
+        try:
+            # attach, KHÔNG end_run ở script con
+            mlflow.start_run(run_id=run_id)
+            print(f"🔗 Attached to MLflow run from coordinator: {run_id}")
+        except Exception as e:
+            print(f"⚠️ Could not attach to MLflow run_id={run_id}: {e}")
+            
     last_checkpoint = None
     if os.path.isdir(args.output_dir):
         last_checkpoint = get_last_checkpoint(args.output_dir)
         if last_checkpoint is not None and rank == 0:
             print(f"♻️  Found checkpoint: {last_checkpoint}")
             print("🚀 Resuming training from the latest checkpoint...")
-    # ----------------------------
 
     if rank == 0:
         print("🚀 Initializing model and tokenizer...")
@@ -271,8 +278,9 @@ def main():
 
             if args.metric_file:
                 import json
-                with open(args.metric_file, "w") as f:
-                    json.dump({"eval_loss": final_eval_loss}, f)
+                with open(args.metric_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"step": int(trainer.state.global_step), "eval_loss": float(final_eval_loss)}) + "\n")
+
 
             print()
             print("✅ Training completed!")
@@ -291,7 +299,6 @@ def main():
                 print("⚠️ HF_TOKEN not found. Cannot push to Hub.")
             else:
                 if args.merge_and_push:
-                    # Merge LoRA with base model and push merged model
                     print(f"🔀 Merging LoRA adapter with base model...")
                     print(f"🚀 Pushing merged {args.save_method} model to Hugging Face Hub: {args.hub_model_id}...")
                     try:
@@ -314,7 +321,6 @@ def main():
                     except Exception as e:
                         print(f"⚠️ Failed to merge and push to hub: {e}")
                 else:
-                    # Just push LoRA adapter (original behavior)
                     print(f"🚀 Pushing LoRA adapter to Hugging Face Hub: {args.hub_model_id}...")
                     try:
                         model.push_to_hub(args.hub_model_id, use_temp_dir=True)
@@ -322,34 +328,11 @@ def main():
                         print("✅ LoRA adapter pushed to Hub completed!")
                     except Exception as e:
                         print(f"⚠️ Failed to push to hub: {e}")
-
-    # --- PHẦN XỬ LÝ MLFLOW (ĐÃ SỬA: CHỈ LOG METRICS, KHÔNG LOG ARTIFACTS, KHÔNG XÓA LOCAL) ---
-    if args.report_to == "mlflow" and rank == 0:
-        print("📝 Logging final metrics to MLflow...")
-
-        def upload_and_cleanup():
-            # 1. Chỉ log metrics (số liệu)
-            if 'metrics' in locals():
-                print("📊 Logging eval metrics directly to run...")
-                mlflow.log_metrics(metrics)
-            
-            print("💾 Files kept locally. No upload performed.")
-
-        if mlflow.active_run():
-            print(
-                f"🔗 Attaching to CURRENT active run: {mlflow.active_run().info.run_id}"
-            )
-            upload_and_cleanup()
-            mlflow.end_run()
-        else:
-            last_run = mlflow.last_active_run()
-            if last_run:
-                print(f"🔄 Re-opening LAST run: {last_run.info.run_id}")
-                with mlflow.start_run(run_id=last_run.info.run_id):
-                    upload_and_cleanup()
-            else:
-                print("⚠️ Could not find any MLflow run to log metrics.")
-
+                        
+    if args.report_to == "mlflow" and rank == 0 and mlflow.active_run():
+        mlflow.log_metrics(metrics)
+        mlflow.log_metric("final_eval_loss", float(final_eval_loss), step=int(trainer.state.global_step))
+        
     if rank == 0:
         print("\n" + "=" * 70)
         if interrupted:
