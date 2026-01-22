@@ -7,10 +7,10 @@ Compares model predictions against ground truth labels from validation dataset.
 Optimized with concurrent requests.
 """
 
+import re
 import sys
 from pathlib import Path
 
-import re
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import asyncio
 import base64
@@ -19,16 +19,18 @@ import os
 from collections import defaultdict
 from io import BytesIO
 from typing import Any, Dict, List, Tuple
+
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["UNSLOTH_STABLE_DOWNLOADS"] = "1"
 os.environ["HF_HUB_DISABLE_XET"] = "1"
+from difflib import SequenceMatcher
+
 import aiohttp
 import numpy as np
 from datasets import load_dataset
 from dotenv import load_dotenv
 from PIL import Image
 from tqdm.asyncio import tqdm as atqdm
-from difflib import SequenceMatcher
 
 from config import (
     FIELD_DEFINITIONS,
@@ -39,15 +41,15 @@ from config import (
 load_dotenv()
 
 HF_TOKEN = os.getenv("hf_token")
-base_url = "https://478daa2e70d4.ngrok-free.app"
+base_url = "https://c20f7a6c94f4.ngrok-free.app"
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
 MODEL_NAME = "ha684/qwen3-vl-2b-20-01-26-2epochs"
 DATASET_NAME = "ha684/vl-vi-en-ja-conv-mix-v1.3"
 DATASET_SPLIT = "validation"
-MAX_CONCURRENT_REQUESTS = 10
+MAX_CONCURRENT_REQUESTS = 1
 TIMEOUT = 180
 MAX_RETRIES = 3
-RETRY_DELAY = 2 
+RETRY_DELAY = 2
 
 
 def detect_language(data: Dict | str) -> str:
@@ -72,11 +74,14 @@ def detect_language(data: Dict | str) -> str:
     if metadata:
         if isinstance(metadata, list):
             metadata = metadata[0] if metadata else {}
-        all_keys.extend(metadata.keys())
+        if isinstance(metadata, dict):
+            all_keys.extend(metadata.keys())
 
     table_rows = data.get("table_rows", [])
     if table_rows and isinstance(table_rows, list) and len(table_rows) > 0:
-        all_keys.extend(table_rows[0].keys())
+        first_row = table_rows[0]
+        if isinstance(first_row, dict):
+            all_keys.extend(first_row.keys())
 
     all_keys_str = " ".join(all_keys)
     japanese_chars = sum(
@@ -127,7 +132,7 @@ def detect_fields_in_sample(
 ) -> List[FieldDefinition]:
     """
     Detect which fields are present (non-null) in the sample's structured_output.
-    
+
     Rules:
     - Metadata: Detect exact keys present in sample (can be empty)
     - Table: Always include product_code, detect unit and quantity if present
@@ -148,9 +153,6 @@ def detect_fields_in_sample(
             structured_output = json.loads(text) if isinstance(text, str) else text
         except:
             return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
-    elif "metadata" in sample or "table_rows" in sample:
-        # Sample is already the structured output dict
-        structured_output = sample
 
     if not structured_output:
         return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
@@ -167,34 +169,38 @@ def detect_fields_in_sample(
     metadata = structured_output.get("metadata", [])
     if isinstance(metadata, list) and len(metadata) > 0:
         metadata_dict = metadata[0]
-        for key in metadata_dict.keys():
-            for field_def in FIELD_DEFINITIONS:
-                if field_def.field_type == "metadata":
-                    field_name = field_def.get_name(language)
-                    if field_name == key:
-                        present_fields.append(field_def)
-                        break
+        if isinstance(metadata_dict, dict):
+            for key in metadata_dict.keys():
+                for field_def in FIELD_DEFINITIONS:
+                    if field_def.field_type == "metadata":
+                        field_name = field_def.get_name(language)
+                        if field_name == key:
+                            present_fields.append(field_def)
+                            break
 
     # Handle table_rows - detect fields in order they appear in data
     table_rows = structured_output.get("table_rows", [])
 
     # Always add product_code first
-    product_code_field = next((f for f in FIELD_DEFINITIONS if f.key == "product_code"), None)
+    product_code_field = next(
+        (f for f in FIELD_DEFINITIONS if f.key == "product_code"), None
+    )
     if product_code_field:
         present_fields.append(product_code_field)
 
     # Detect other table fields in order they appear
     if table_rows and len(table_rows) > 0:
         first_row = table_rows[0]
-        for key in first_row.keys():
-            if product_code_field and key == product_code_field.get_name(language):
-                continue
-            for field_def in FIELD_DEFINITIONS:
-                if field_def.field_type == "table":
-                    field_name = field_def.get_name(language)
-                    if field_name == key:
-                        present_fields.append(field_def)
-                        break
+        if isinstance(first_row, dict):
+            for key in first_row.keys():
+                if product_code_field and key == product_code_field.get_name(language):
+                    continue
+                for field_def in FIELD_DEFINITIONS:
+                    if field_def.field_type == "table":
+                        field_name = field_def.get_name(language)
+                        if field_name == key:
+                            present_fields.append(field_def)
+                            break
 
     return present_fields
 
@@ -234,23 +240,27 @@ def get_system_and_user_prompt(
 def image_to_base64(image) -> str:
     """Convert PIL Image to base64 string."""
     if isinstance(image, dict):
-        if 'bytes' in image:
-            return base64.b64encode(image['bytes']).decode('utf-8')
-        image = image.get('image', image)
-    
+        if "bytes" in image:
+            return base64.b64encode(image["bytes"]).decode("utf-8")
+        image = image.get("image", image)
+
     if isinstance(image, Image.Image):
         buffered = BytesIO()
         image.save(buffered, format="PNG")
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
-    
+
     if isinstance(image, bytes):
-        return base64.b64encode(image).decode('utf-8')
-    
+        return base64.b64encode(image).decode("utf-8")
+
     raise ValueError(f"Unsupported image type: {type(image)}")
 
 
 async def call_vllm_api_async(
-    session: aiohttp.ClientSession, image, system_prompt: str, user_prompt: str, retry_count: int = 0
+    session: aiohttp.ClientSession,
+    image,
+    system_prompt: str,
+    user_prompt: str,
+    retry_count: int = 0,
 ) -> str:
     """Call vLLM API with image and prompts asynchronously with retry logic."""
     image_base64 = image_to_base64(image)
@@ -271,7 +281,7 @@ async def call_vllm_api_async(
                     },
                     {"type": "text", "text": user_prompt},
                 ],
-            }
+            },
         ],
         "max_tokens": 4096,
         "temperature": 1.2,
@@ -293,9 +303,13 @@ async def call_vllm_api_async(
             return result["choices"][0]["message"]["content"]
     except Exception as e:
         if retry_count < MAX_RETRIES:
-            print(f"API call failed (attempt {retry_count + 1}/{MAX_RETRIES}): {e}. Retrying in {RETRY_DELAY}s...")
+            print(
+                f"API call failed (attempt {retry_count + 1}/{MAX_RETRIES}): {e}. Retrying in {RETRY_DELAY}s..."
+            )
             await asyncio.sleep(RETRY_DELAY)
-            return await call_vllm_api_async(session, image, system_prompt, user_prompt, retry_count + 1)
+            return await call_vllm_api_async(
+                session, image, system_prompt, user_prompt, retry_count + 1
+            )
         else:
             print(f"API call failed after {MAX_RETRIES} retries: {e}")
             return None
@@ -303,20 +317,20 @@ async def call_vllm_api_async(
 
 def is_fuzzy_match(s1: str, s2: str, threshold=0.9) -> bool:
     """
-    Kiểm tra độ tương đồng giữa 2 chuỗi. 
+    Kiểm tra độ tương đồng giữa 2 chuỗi.
     Trả về True nếu độ tương đồng >= threshold (0.9 = 90%).
     """
     if s1 is None or s2 is None:
         return s1 == s2
-    
+
     s1 = str(s1).strip().lower()
     s2 = str(s2).strip().lower()
-    
+
     if s1 == s2:
         return True
-    
+
     ratio = SequenceMatcher(None, s1, s2).ratio()
-    
+
     if s1 in s2 or s2 in s1:
         if abs(len(s1) - len(s2)) <= 5:
             return True
@@ -362,10 +376,10 @@ def normalize_ar_code(value: str) -> str:
     Xử lý đặc thù Mã AR linh hoạt:
     - Cắt bỏ phần đuôi sau dấu gạch dưới (_) hoặc khoảng trắng ( )
     """
-    if value is None: 
+    if value is None:
         return None
     s = str(value).strip()
-    parts = re.split(r'[_\s]+', s)
+    parts = re.split(r"[_\s]+", s)
     return parts[0].strip() if parts else value
 
 
@@ -375,9 +389,9 @@ def normalize_so_phieu(value: str) -> str:
     """
     if value is None:
         return None
-    
+
     normalized = value.strip().lower()
-    normalized = normalized.replace(' ', '').replace('.', '').replace('-', '')
+    normalized = normalized.replace(" ", "").replace(".", "").replace("-", "")
     return normalized
 
 
@@ -387,9 +401,9 @@ def normalize_dia_chi(value: str) -> str:
     """
     if value is None:
         return None
-    
+
     normalized = value.strip().lower()
-    normalized = normalized.replace(' ', '')
+    normalized = normalized.replace(" ", "")
     return normalized
 
 
@@ -399,8 +413,8 @@ def normalize_date_field(value: str) -> str:
     """
     if value is None:
         return None
-    
-    normalized = re.sub(r'\([^)]*\)', '', value)
+
+    normalized = re.sub(r"\([^)]*\)", "", value)
     return normalized.strip()
 
 
@@ -442,9 +456,9 @@ def get_field_mappings(language: str) -> Dict[str, str]:
             "product_code": "製品コード",
             "unit": "単位",
             "quantity": "数量",
-        }
+        },
     }
-    
+
     return mappings.get(language, mappings["en"])
 
 
@@ -457,42 +471,48 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict, language: str) -> Dict[str,
     if isinstance(pred_meta, list):
         pred_meta = pred_meta[0] if pred_meta else {}
 
+    # Ensure both are dicts after extraction from list
+    if not isinstance(gt_meta, dict):
+        gt_meta = {}
+    if not isinstance(pred_meta, dict):
+        pred_meta = {}
+
     # Get field mappings for this language
     field_map = get_field_mappings(language)
-    
+
     # Define fuzzy and date fields using language-specific names
     fuzzy_fields = [field_map["receiving_warehouse"], field_map["address"]]
     date_field_base_names = [
         normalize_date_field(field_map["document_date"]),
-        normalize_date_field(field_map["export_date"])
+        normalize_date_field(field_map["export_date"]),
     ]
 
     for field in gt_meta.keys():
         pred_original = pred_meta.get(field)
         gt_original = gt_meta.get(field)
-        
+
         correct = False
-        
+
         normalized_field = normalize_date_field(field)
-        
+
         # 1. Xử lý AR code
         if field == field_map["ar_code"]:
             pred_val = normalize_ar_code(pred_original)
             gt_val = normalize_ar_code(gt_original)
-            correct = (pred_val == gt_val)
-            
+            correct = pred_val == gt_val
+
         # 2. Xử lý document number
         elif field == field_map["document_number"]:
             pred_val = normalize_so_phieu(pred_original)
             gt_val = normalize_so_phieu(gt_original)
-            correct = (pred_val == gt_val)
-            
+            correct = pred_val == gt_val
+
         # 3. Xử lý Fuzzy fields (warehouse, address)
         elif field in fuzzy_fields:
             p_norm = normalize_dia_chi(pred_original)
             g_norm = normalize_dia_chi(gt_original)
             correct = is_fuzzy_match(p_norm, g_norm, threshold=0.85)
-            
+
         # 4. Xử lý các trường ngày
         elif normalized_field in date_field_base_names:
             pred_val = None
@@ -500,10 +520,10 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict, language: str) -> Dict[str,
                 if normalize_date_field(pred_field_name) == normalized_field:
                     pred_val = normalize_value(pred_field_value)
                     break
-            
+
             gt_val = normalize_value(gt_original)
-            correct = (pred_val == gt_val)
-                
+            correct = pred_val == gt_val
+
         # 5. Các trường còn lại
         else:
             pred_val = normalize_value(pred_original)
@@ -511,9 +531,9 @@ def compare_metadata(pred_meta: Dict, gt_meta: Dict, language: str) -> Dict[str,
             if gt_val is None and pred_val is None:
                 correct = True
             elif gt_val is None or pred_val is None:
-                correct = (gt_val == pred_val)
+                correct = gt_val == pred_val
             else:
-                correct = (pred_val == gt_val)
+                correct = pred_val == gt_val
 
         results[field] = {
             "correct": correct,
@@ -534,6 +554,13 @@ def compare_table_rows(
     if not gt_rows:
         return 0, 0, []
 
+    # Filter out non-dict rows
+    gt_rows = [row for row in gt_rows if isinstance(row, dict)]
+    pred_rows = [row for row in (pred_rows or []) if isinstance(row, dict)]
+
+    if not gt_rows:
+        return 0, 0, []
+
     field_map = get_field_mappings(language)
     product_code_field = field_map["product_code"]
     quantity_field = field_map["quantity"]
@@ -543,8 +570,7 @@ def compare_table_rows(
     row_details = []
 
     pred_by_code = {
-        normalize_value(row.get(product_code_field)): row 
-        for row in (pred_rows or [])
+        normalize_value(row.get(product_code_field)): row for row in pred_rows
     }
 
     for gt_row in gt_rows:
@@ -561,7 +587,11 @@ def compare_table_rows(
         pred_row = pred_by_code[gt_code]
         pred_qty = normalize_value(pred_row.get(quantity_field))
 
-        qty_match = (gt_qty == pred_qty) if (gt_qty is not None and pred_qty is not None) else False
+        qty_match = (
+            (gt_qty == pred_qty)
+            if (gt_qty is not None and pred_qty is not None)
+            else False
+        )
 
         if not qty_match:
             row_detail["errors"].append(
@@ -592,20 +622,37 @@ async def evaluate_single_async(
         print(f"Failed to parse ground truth: {e}")
         return None
 
+    # Detect language from ground truth keys
     language = detect_language(gt_data)
-    
-    system_prompt, user_prompt = get_system_and_user_prompt(language, gt_data)
 
+    # Get appropriate prompts for the detected language
+    system_prompt, user_prompt = get_system_and_user_prompt(language, sample=gt_data)
+    print(f"Ground truth: {gt_data}")
+    print(f"Language: {language}")
+    print(f"System prompt: {system_prompt}")
+    print(f"User prompt: {user_prompt}")
+    # Check if ground truth has table_rows
     gt_has_table_rows = bool(gt_data.get("table_rows"))
 
     try:
-        model_output = await call_vllm_api_async(session, image, system_prompt, user_prompt)
-        
+        model_output = await call_vllm_api_async(
+            session, image, system_prompt, user_prompt
+        )
+
         if model_output is None:
             if retry_count < MAX_RETRIES:
-                print(f"Evaluation failed (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}. Retrying...")
+                print(
+                    f"Evaluation failed (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}. Retrying..."
+                )
                 await asyncio.sleep(RETRY_DELAY)
-                return await evaluate_single_async(session, image, ground_truth, source_file, page_number, retry_count + 1)
+                return await evaluate_single_async(
+                    session,
+                    image,
+                    ground_truth,
+                    source_file,
+                    page_number,
+                    retry_count + 1,
+                )
             else:
                 return {
                     "success": False,
@@ -613,7 +660,9 @@ async def evaluate_single_async(
                     "error": "API call failed after retries",
                     "metadata_scores": {},
                     "table_rows_correct": 0,
-                    "table_rows_total": len(gt_data.get("table_rows", [])) if gt_has_table_rows else 0,
+                    "table_rows_total": len(gt_data.get("table_rows", []))
+                    if gt_has_table_rows
+                    else 0,
                     "model_response": None,
                     "label": gt_data,
                     "source_file": source_file,
@@ -621,22 +670,42 @@ async def evaluate_single_async(
                     "language": language,
                     "gt_has_table_rows": gt_has_table_rows,
                 }
-        
+
         pred_data = parse_model_output(model_output)
 
-        if pred_data is None:
+        # Validate that pred_data is a dictionary (not None, string, or other type)
+        if pred_data is None or not isinstance(pred_data, dict):
+            # Retry if JSON parsing failed or returned non-dict
             if retry_count < MAX_RETRIES:
-                print(f"JSON parsing failed (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}. Retrying...")
+                error_type = (
+                    "JSON parsing failed"
+                    if pred_data is None
+                    else f"Model returned {type(pred_data).__name__} instead of dict"
+                )
+                print(
+                    f"{error_type} (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}. Retrying..."
+                )
                 await asyncio.sleep(RETRY_DELAY)
-                return await evaluate_single_async(session, image, ground_truth, source_file, page_number, retry_count + 1)
+                return await evaluate_single_async(
+                    session,
+                    image,
+                    ground_truth,
+                    source_file,
+                    page_number,
+                    retry_count + 1,
+                )
             else:
                 return {
                     "success": False,
                     "skipped": False,
-                    "error": "JSON parsing failed after retries",
+                    "error": "JSON parsing failed after retries"
+                    if pred_data is None
+                    else f"Model returned {type(pred_data).__name__} instead of dict",
                     "metadata_scores": {},
                     "table_rows_correct": 0,
-                    "table_rows_total": len(gt_data.get("table_rows", [])) if gt_has_table_rows else 0,
+                    "table_rows_total": len(gt_data.get("table_rows", []))
+                    if gt_has_table_rows
+                    else 0,
                     "model_response": model_output,
                     "label": gt_data,
                     "source_file": source_file,
@@ -647,33 +716,31 @@ async def evaluate_single_async(
 
         # Evaluate metadata
         metadata_scores = compare_metadata(
-            pred_data.get("metadata", {}), 
-            gt_data.get("metadata", {}),
-            language
+            pred_data.get("metadata", {}), gt_data.get("metadata", {}), language
         )
 
         # Check if model correctly predicted no table_rows when GT has none
         pred_has_table_rows = bool(pred_data.get("table_rows"))
-        table_structure_correct = (gt_has_table_rows == pred_has_table_rows)
+        table_structure_correct = gt_has_table_rows == pred_has_table_rows
 
         # Evaluate table rows only if GT has table_rows
         if gt_has_table_rows:
             rows_correct, rows_total, row_details = compare_table_rows(
-                pred_data.get("table_rows", []), 
-                gt_data.get("table_rows", []),
-                language
+                pred_data.get("table_rows", []), gt_data.get("table_rows", []), language
             )
         else:
             # GT has no table_rows - check if model also didn't generate any
             rows_correct = 0
             rows_total = 0
             row_details = []
-            
+
             # If model incorrectly generated table_rows when GT has none
             if pred_has_table_rows:
-                row_details.append({
-                    "error": f"Model incorrectly generated {len(pred_data.get('table_rows', []))} table rows when GT has none"
-                })
+                row_details.append(
+                    {
+                        "error": f"Model incorrectly generated {len(pred_data.get('table_rows', []))} table rows when GT has none"
+                    }
+                )
 
         return {
             "success": True,
@@ -694,11 +761,17 @@ async def evaluate_single_async(
     except Exception as e:
         # Retry on any unexpected error
         if retry_count < MAX_RETRIES:
-            print(f"Unexpected error (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}: {e}. Retrying...")
+            print(
+                f"Unexpected error (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}: {e}. Retrying..."
+            )
             await asyncio.sleep(RETRY_DELAY)
-            return await evaluate_single_async(session, image, ground_truth, source_file, page_number, retry_count + 1)
+            return await evaluate_single_async(
+                session, image, ground_truth, source_file, page_number, retry_count + 1
+            )
         else:
-            print(f"Evaluation failed after {MAX_RETRIES} retries for {source_file}: {e}")
+            print(
+                f"Evaluation failed after {MAX_RETRIES} retries for {source_file}: {e}"
+            )
             return {
                 "success": False,
                 "skipped": False,
@@ -707,11 +780,13 @@ async def evaluate_single_async(
                 "table_rows_correct": 0,
                 "table_rows_total": 0,
                 "model_response": None,
-                "label": gt_data if 'gt_data' in locals() else None,
+                "label": gt_data if "gt_data" in locals() else None,
                 "source_file": source_file,
                 "page_number": page_number,
-                "language": language if 'language' in locals() else None,
-                "gt_has_table_rows": gt_has_table_rows if 'gt_has_table_rows' in locals() else None,
+                "language": language if "language" in locals() else None,
+                "gt_has_table_rows": gt_has_table_rows
+                if "gt_has_table_rows" in locals()
+                else None,
             }
 
 
@@ -753,8 +828,7 @@ async def evaluate_dataset_async(dataset):
     all_results = []
 
     connector = aiohttp.TCPConnector(
-        limit=MAX_CONCURRENT_REQUESTS, 
-        limit_per_host=MAX_CONCURRENT_REQUESTS
+        limit=MAX_CONCURRENT_REQUESTS, limit_per_host=MAX_CONCURRENT_REQUESTS
     )
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
 
@@ -769,11 +843,15 @@ async def evaluate_dataset_async(dataset):
                 example = {
                     "image": batch_slice["image"][j],
                     "text": batch_slice["text"][j],
-                    "source_file": batch_slice.get("source_file", [None] * batch_size)[j],
-                    "page_number": batch_slice.get("page_number", [None] * batch_size)[j],
+                    "source_file": batch_slice.get("source_file", [None] * batch_size)[
+                        j
+                    ],
+                    "page_number": batch_slice.get("page_number", [None] * batch_size)[
+                        j
+                    ],
                 }
                 batch.append(example)
-            
+
             batch_results = await process_batch(session, batch, pbar)
             all_results.extend(batch_results)
 
@@ -786,9 +864,9 @@ def main():
     """Main evaluation loop."""
     print(f"Loading dataset: {DATASET_NAME} ({DATASET_SPLIT})")
     dataset = load_dataset(
-        "parquet", 
+        "parquet",
         data_files={"test": f"hf://datasets/{DATASET_NAME}/data/test-*.parquet"},
-        split="test"
+        split="test",
     )
 
     print(f"Dataset loaded: {len(dataset)} examples")
@@ -806,17 +884,19 @@ def main():
     total_rows_count = 0
     table_structure_correct_count = 0
     table_structure_total_count = 0
-    
+
     # Track stats by language
-    language_stats = defaultdict(lambda: {
-        "total": 0,
-        "successful": 0,
-        "metadata_scores": defaultdict(list),
-        "rows_correct": 0,
-        "rows_total": 0,
-        "table_structure_correct": 0,
-        "table_structure_total": 0,
-    })
+    language_stats = defaultdict(
+        lambda: {
+            "total": 0,
+            "successful": 0,
+            "metadata_scores": defaultdict(list),
+            "rows_correct": 0,
+            "rows_total": 0,
+            "table_structure_correct": 0,
+            "table_structure_total": 0,
+        }
+    )
 
     for idx, result in enumerate(results):
         if result is None:
@@ -845,11 +925,13 @@ def main():
             for field, score_info in result["metadata_scores"].items():
                 correct = score_info["correct"]
                 metadata_field_scores[field].append(1 if correct else 0)
-                language_stats[language]["metadata_scores"][field].append(1 if correct else 0)
+                language_stats[language]["metadata_scores"][field].append(
+                    1 if correct else 0
+                )
 
             rows_correct = result["table_rows_correct"]
             rows_total = result["table_rows_total"]
-            
+
             # Only count rows if GT has table_rows
             if result.get("gt_has_table_rows", True):
                 total_rows_correct += rows_correct
@@ -859,7 +941,9 @@ def main():
         else:
             # Count failed evaluations
             if "error" in result:
-                print(f"\n[{idx}] Failed: {result.get('error')} - {result.get('source_file')}")
+                print(
+                    f"\n[{idx}] Failed: {result.get('error')} - {result.get('source_file')}"
+                )
 
     evaluated_examples = total_examples - skipped_examples
 
@@ -871,8 +955,9 @@ def main():
     print(f"Evaluated examples: {evaluated_examples}")
     print(
         f"Successful parses: {successful_parses}/{evaluated_examples} "
-        f"({100 * successful_parses / evaluated_examples:.1f}%)" 
-        if evaluated_examples > 0 else "Successful parses: 0/0"
+        f"({100 * successful_parses / evaluated_examples:.1f}%)"
+        if evaluated_examples > 0
+        else "Successful parses: 0/0"
     )
 
     # Print overall metadata accuracy
@@ -898,15 +983,19 @@ def main():
         )
     else:
         print("  No table rows to evaluate")
-    
+
     # Print table structure accuracy (whether model correctly detected presence/absence of table)
     print("\n--- TABLE STRUCTURE DETECTION ACCURACY ---")
     if table_structure_total_count > 0:
-        structure_accuracy = 100 * table_structure_correct_count / table_structure_total_count
+        structure_accuracy = (
+            100 * table_structure_correct_count / table_structure_total_count
+        )
         print(
             f"  Correct structure detection: {table_structure_correct_count}/{table_structure_total_count} ({structure_accuracy:.1f}%)"
         )
-        print("  (Whether model correctly identified if document has table_rows or not)")
+        print(
+            "  (Whether model correctly identified if document has table_rows or not)"
+        )
     else:
         print("  No structure detection to evaluate")
 
@@ -914,29 +1003,40 @@ def main():
     print("\n" + "=" * 80)
     print("PER-LANGUAGE STATISTICS")
     print("=" * 80)
-    
+
     for lang in sorted(language_stats.keys()):
         stats = language_stats[lang]
         print(f"\n--- {lang.upper()} ---")
         print(f"  Total: {stats['total']}")
-        print(f"  Successful: {stats['successful']}/{stats['total']} "
-              f"({100 * stats['successful'] / stats['total']:.1f}%)" 
-              if stats['total'] > 0 else "  Successful: 0/0")
-        
-        if stats['metadata_scores']:
-            print(f"\n  Metadata accuracy:")
-            for field in sorted(stats['metadata_scores'].keys()):
-                scores = stats['metadata_scores'][field]
+        print(
+            f"  Successful: {stats['successful']}/{stats['total']} "
+            f"({100 * stats['successful'] / stats['total']:.1f}%)"
+            if stats["total"] > 0
+            else "  Successful: 0/0"
+        )
+
+        if stats["metadata_scores"]:
+            print("\n  Metadata accuracy:")
+            for field in sorted(stats["metadata_scores"].keys()):
+                scores = stats["metadata_scores"][field]
                 accuracy = np.mean(scores) * 100
-                print(f"    {field:30s}: {accuracy:5.1f}% ({sum(scores)}/{len(scores)})")
-        
-        if stats['rows_total'] > 0:
-            row_acc = 100 * stats['rows_correct'] / stats['rows_total']
-            print(f"\n  Table rows accuracy: {stats['rows_correct']}/{stats['rows_total']} ({row_acc:.1f}%)")
-        
-        if stats['table_structure_total'] > 0:
-            structure_acc = 100 * stats['table_structure_correct'] / stats['table_structure_total']
-            print(f"  Table structure detection: {stats['table_structure_correct']}/{stats['table_structure_total']} ({structure_acc:.1f}%)")
+                print(
+                    f"    {field:30s}: {accuracy:5.1f}% ({sum(scores)}/{len(scores)})"
+                )
+
+        if stats["rows_total"] > 0:
+            row_acc = 100 * stats["rows_correct"] / stats["rows_total"]
+            print(
+                f"\n  Table rows accuracy: {stats['rows_correct']}/{stats['rows_total']} ({row_acc:.1f}%)"
+            )
+
+        if stats["table_structure_total"] > 0:
+            structure_acc = (
+                100 * stats["table_structure_correct"] / stats["table_structure_total"]
+            )
+            print(
+                f"  Table structure detection: {stats['table_structure_correct']}/{stats['table_structure_total']} ({structure_acc:.1f}%)"
+            )
 
     # Save results
     output_file = "evaluation_results.json"
@@ -944,20 +1044,20 @@ def main():
     for i, r in enumerate(results):
         if r is not None:
             has_error = False
-            
+
             if not r.get("success", False) and not r.get("skipped", False):
                 has_error = True
-            
+
             if r.get("success", False):
                 for field, score_info in r.get("metadata_scores", {}).items():
                     if not score_info["correct"]:
                         has_error = True
                         break
-                
+
                 if r.get("table_rows_total", 0) > 0:
                     if r.get("table_rows_correct", 0) < r.get("table_rows_total", 0):
                         has_error = True
-            
+
             if has_error:
                 simplified_results.append(
                     {
@@ -993,7 +1093,9 @@ def main():
                     "table_rows_accuracy": 100 * total_rows_correct / total_rows_count
                     if total_rows_count > 0
                     else 0,
-                    "table_structure_accuracy": 100 * table_structure_correct_count / table_structure_total_count
+                    "table_structure_accuracy": 100
+                    * table_structure_correct_count
+                    / table_structure_total_count
                     if table_structure_total_count > 0
                     else 0,
                     "language_breakdown": {
@@ -1001,16 +1103,24 @@ def main():
                             "total": stats["total"],
                             "successful": stats["successful"],
                             "metadata_accuracy": {
-                                k: np.mean(v) * 100 
+                                k: np.mean(v) * 100
                                 for k, v in stats["metadata_scores"].items()
-                            } if stats["metadata_scores"] else {},
-                            "table_rows_accuracy": 100 * stats["rows_correct"] / stats["rows_total"]
-                            if stats["rows_total"] > 0 else 0,
-                            "table_structure_accuracy": 100 * stats["table_structure_correct"] / stats["table_structure_total"]
-                            if stats["table_structure_total"] > 0 else 0,
+                            }
+                            if stats["metadata_scores"]
+                            else {},
+                            "table_rows_accuracy": 100
+                            * stats["rows_correct"]
+                            / stats["rows_total"]
+                            if stats["rows_total"] > 0
+                            else 0,
+                            "table_structure_accuracy": 100
+                            * stats["table_structure_correct"]
+                            / stats["table_structure_total"]
+                            if stats["table_structure_total"] > 0
+                            else 0,
                         }
                         for lang, stats in language_stats.items()
-                    }
+                    },
                 },
                 "errors": simplified_results,
             },

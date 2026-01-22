@@ -92,7 +92,8 @@ def detect_fields_in_sample(
     - Table: Always include product_code, detect unit and quantity if present
 
     Args:
-        sample: Dataset sample with 'text' or 'structured_output' field
+        sample: Dataset sample with 'text', 'structured_output' field, 
+                or directly the structured data with 'metadata'/'table_rows' keys
         language: Language code for field name mapping
 
     Returns:
@@ -107,6 +108,9 @@ def detect_fields_in_sample(
             structured_output = json.loads(text) if isinstance(text, str) else text
         except:
             return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
+    elif "metadata" in sample or "table_rows" in sample:
+        # Sample IS the structured_output directly (has metadata/table_rows keys)
+        structured_output = sample
 
     if not structured_output:
         return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
