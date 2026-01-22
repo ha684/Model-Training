@@ -41,9 +41,9 @@ from config import (
 load_dotenv()
 
 HF_TOKEN = os.getenv("hf_token")
-base_url = "https://c20f7a6c94f4.ngrok-free.app"
+base_url = "https://4b886bdc6f86.ngrok-free.app"
 VLLM_API_URL = f"{base_url}/v1/chat/completions"
-MODEL_NAME = "ha684/qwen3-vl-2b-20-01-26-2epochs"
+MODEL_NAME = "ha684/qwen3-vl-2b-21-01-26"
 DATASET_NAME = "ha684/vl-vi-en-ja-conv-mix-v1.3"
 DATASET_SPLIT = "validation"
 MAX_CONCURRENT_REQUESTS = 1
@@ -74,14 +74,11 @@ def detect_language(data: Dict | str) -> str:
     if metadata:
         if isinstance(metadata, list):
             metadata = metadata[0] if metadata else {}
-        if isinstance(metadata, dict):
-            all_keys.extend(metadata.keys())
+        all_keys.extend(metadata.keys())
 
     table_rows = data.get("table_rows", [])
     if table_rows and isinstance(table_rows, list) and len(table_rows) > 0:
-        first_row = table_rows[0]
-        if isinstance(first_row, dict):
-            all_keys.extend(first_row.keys())
+        all_keys.extend(table_rows[0].keys())
 
     all_keys_str = " ".join(all_keys)
     japanese_chars = sum(
@@ -132,13 +129,14 @@ def detect_fields_in_sample(
 ) -> List[FieldDefinition]:
     """
     Detect which fields are present (non-null) in the sample's structured_output.
-
+    
     Rules:
     - Metadata: Detect exact keys present in sample (can be empty)
     - Table: Always include product_code, detect unit and quantity if present
 
     Args:
-        sample: Dataset sample with 'text' or 'structured_output' field
+        sample: Dataset sample with 'text', 'structured_output' field, 
+                or directly the structured data with 'metadata'/'table_rows' keys
         language: Language code for field name mapping
 
     Returns:
@@ -153,6 +151,9 @@ def detect_fields_in_sample(
             structured_output = json.loads(text) if isinstance(text, str) else text
         except:
             return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
+    elif "metadata" in sample or "table_rows" in sample:
+        # Sample IS the structured_output directly (has metadata/table_rows keys)
+        structured_output = sample
 
     if not structured_output:
         return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
@@ -169,38 +170,34 @@ def detect_fields_in_sample(
     metadata = structured_output.get("metadata", [])
     if isinstance(metadata, list) and len(metadata) > 0:
         metadata_dict = metadata[0]
-        if isinstance(metadata_dict, dict):
-            for key in metadata_dict.keys():
-                for field_def in FIELD_DEFINITIONS:
-                    if field_def.field_type == "metadata":
-                        field_name = field_def.get_name(language)
-                        if field_name == key:
-                            present_fields.append(field_def)
-                            break
+        for key in metadata_dict.keys():
+            for field_def in FIELD_DEFINITIONS:
+                if field_def.field_type == "metadata":
+                    field_name = field_def.get_name(language)
+                    if field_name == key:
+                        present_fields.append(field_def)
+                        break
 
     # Handle table_rows - detect fields in order they appear in data
     table_rows = structured_output.get("table_rows", [])
 
     # Always add product_code first
-    product_code_field = next(
-        (f for f in FIELD_DEFINITIONS if f.key == "product_code"), None
-    )
+    product_code_field = next((f for f in FIELD_DEFINITIONS if f.key == "product_code"), None)
     if product_code_field:
         present_fields.append(product_code_field)
 
     # Detect other table fields in order they appear
     if table_rows and len(table_rows) > 0:
         first_row = table_rows[0]
-        if isinstance(first_row, dict):
-            for key in first_row.keys():
-                if product_code_field and key == product_code_field.get_name(language):
-                    continue
-                for field_def in FIELD_DEFINITIONS:
-                    if field_def.field_type == "table":
-                        field_name = field_def.get_name(language)
-                        if field_name == key:
-                            present_fields.append(field_def)
-                            break
+        for key in first_row.keys():
+            if product_code_field and key == product_code_field.get_name(language):
+                continue
+            for field_def in FIELD_DEFINITIONS:
+                if field_def.field_type == "table":
+                    field_name = field_def.get_name(language)
+                    if field_name == key:
+                        present_fields.append(field_def)
+                        break
 
     return present_fields
 
@@ -235,7 +232,6 @@ def get_system_and_user_prompt(
     user_prompt = user_prompts.get(language, user_prompts["en"])
 
     return system_prompt, user_prompt
-
 
 def image_to_base64(image) -> str:
     """Convert PIL Image to base64 string."""
