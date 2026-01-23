@@ -29,13 +29,18 @@ def detect_language(data: Dict | str) -> str:
     all_keys = []
     metadata = data.get("metadata", [])
     if metadata:
-        if isinstance(metadata, list):
-            metadata = metadata[0] if metadata else {}
-        all_keys.extend(metadata.keys())
+        if isinstance(metadata, list) and len(metadata) > 0:
+            item = metadata[0]
+            if isinstance(item, dict):
+                all_keys.extend(item.keys())
+        elif isinstance(metadata, dict):
+             all_keys.extend(metadata.keys())
 
     table_rows = data.get("table_rows", [])
     if table_rows and isinstance(table_rows, list) and len(table_rows) > 0:
-        all_keys.extend(table_rows[0].keys())
+        item = table_rows[0]
+        if isinstance(item, dict):
+            all_keys.extend(item.keys())
 
     all_keys_str = " ".join(all_keys)
     japanese_chars = sum(
@@ -59,7 +64,6 @@ def detect_language(data: Dict | str) -> str:
         "Đvt",
         "Số lượng",
     ]
-    # Check if any Vietnamese field exists in keys (exact match or as substring)
     for vn_field in vietnamese_fields:
         if any(vn_field in key for key in all_keys):
             return "vi"
@@ -86,18 +90,6 @@ def detect_fields_in_sample(
 ) -> List[FieldDefinition]:
     """
     Detect which fields are present (non-null) in the sample's structured_output.
-    
-    Rules:
-    - Metadata: Detect exact keys present in sample (can be empty)
-    - Table: Always include product_code, detect unit and quantity if present
-
-    Args:
-        sample: Dataset sample with 'text', 'structured_output' field, 
-                or directly the structured data with 'metadata'/'table_rows' keys
-        language: Language code for field name mapping
-
-    Returns:
-        List of FieldDefinitions that are present in the sample
     """
     structured_output = None
     if "structured_output" in sample:
@@ -109,7 +101,6 @@ def detect_fields_in_sample(
         except:
             return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
     elif "metadata" in sample or "table_rows" in sample:
-        # Sample IS the structured_output directly (has metadata/table_rows keys)
         structured_output = sample
 
     if not structured_output:
@@ -120,44 +111,44 @@ def detect_fields_in_sample(
             structured_output = json.loads(structured_output)
         except:
             return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
+    
+    if not isinstance(structured_output, dict):
+        return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
 
     present_fields = []
 
-    # Handle metadata - detect keys in order they appear in data
     metadata = structured_output.get("metadata", [])
     if isinstance(metadata, list) and len(metadata) > 0:
         metadata_dict = metadata[0]
-        for key in metadata_dict.keys():
-            for field_def in FIELD_DEFINITIONS:
-                if field_def.field_type == "metadata":
-                    field_name = field_def.get_name(language)
-                    if field_name == key:
-                        present_fields.append(field_def)
-                        break
+        if isinstance(metadata_dict, dict):
+            for key in metadata_dict.keys():
+                for field_def in FIELD_DEFINITIONS:
+                    if field_def.field_type == "metadata":
+                        field_name = field_def.get_name(language)
+                        if field_name == key:
+                            present_fields.append(field_def)
+                            break
 
-    # Handle table_rows - detect fields in order they appear in data
     table_rows = structured_output.get("table_rows", [])
 
-    # Always add product_code first
     product_code_field = next((f for f in FIELD_DEFINITIONS if f.key == "product_code"), None)
     if product_code_field:
         present_fields.append(product_code_field)
 
-    # Detect other table fields in order they appear
-    if table_rows and len(table_rows) > 0:
+    if table_rows and isinstance(table_rows, list) and len(table_rows) > 0:
         first_row = table_rows[0]
-        for key in first_row.keys():
-            if product_code_field and key == product_code_field.get_name(language):
-                continue
-            for field_def in FIELD_DEFINITIONS:
-                if field_def.field_type == "table":
-                    field_name = field_def.get_name(language)
-                    if field_name == key:
-                        present_fields.append(field_def)
-                        break
+        if isinstance(first_row, dict):
+            for key in first_row.keys():
+                if product_code_field and key == product_code_field.get_name(language):
+                    continue
+                for field_def in FIELD_DEFINITIONS:
+                    if field_def.field_type == "table":
+                        field_name = field_def.get_name(language)
+                        if field_name == key:
+                            present_fields.append(field_def)
+                            break
 
     return present_fields
-
 
 def get_system_and_user_prompt(
     language: str, sample: Dict = None, custom_fields: List[FieldDefinition] = None
@@ -220,6 +211,7 @@ def convert_to_conversation(sample: Dict) -> Dict:
                     "content": [{"type": "text", "text": sample["text"]}],
                 },
             ]
+
             return {"messages": conversation}
 
         text_data = sample["text"]
@@ -268,16 +260,9 @@ def convert_to_conversation(sample: Dict) -> Dict:
     except Exception as e:
         print("\n" + "=" * 60)
         print(f"ERROR: {e}")
-        print(f"Source File: {sample.get('source_file', 'Unknown')}")
         print("-" * 60)
-        debug_sample = sample.copy()
-        debug_sample["image"] = (
-            f"<PIL.Image {sample['image'].size if hasattr(sample.get('image'), 'size') else 'N/A'}>"
-        )
-        print(json.dumps(debug_sample, indent=2, ensure_ascii=False, default=str))
         print("=" * 60 + "\n")
         raise e
-
 
 class LazyVisionDataset(TorchDataset):
     def __init__(self, hf_dataset):
@@ -289,6 +274,12 @@ class LazyVisionDataset(TorchDataset):
     def __getitem__(self, idx):
         sample = self.dataset[idx]
         return convert_to_conversation(sample)
+
+    @property
+    def column_names(self):
+        if hasattr(self.dataset, "column_names"):
+            return ["messages"]
+        return ["messages"]
 
 
 class LazyVisionGRPODataset(TorchDataset):
