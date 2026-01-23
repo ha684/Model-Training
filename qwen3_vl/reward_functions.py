@@ -155,18 +155,16 @@ def normalize_json_structure(data):
 def format_reward_func(completions, **kwargs):
     rewards = []
     for completion in completions:
-        score = 0.0
-        if len(completion) > 0:
-            removal = completion.replace("addCriterion", "").replace("\n", "")
-            if (len(completion) - len(removal)) / len(completion) >= 0.5:
-                score -= 2.0
-        
         data = extract_json_from_text(completion)
         if data is None:
-            score -= 2.0 
+            rewards.append(-2.0)
         else:
-            score += 0.1
-        rewards.append(score)
+            has_metadata = isinstance(data.get("metadata"), (dict, list))
+            has_table = isinstance(data.get("table_rows"), list)
+            score = 0.0
+            if has_metadata and has_table:
+                score = 0.5
+            rewards.append(score)
     return rewards
 
 def metadata_reward_func(completions, answer, **kwargs):
@@ -217,7 +215,6 @@ def metadata_reward_func(completions, answer, **kwargs):
         else:
             final_score = match_score_sum / denominator
 
-        # Scale về [-1, 1]
         rewards.append((final_score * 2.0) - 1.0)
 
     return rewards

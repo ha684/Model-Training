@@ -281,32 +281,34 @@ class LazyVisionDataset(TorchDataset):
             return ["messages"]
         return ["messages"]
 
-
 class LazyVisionGRPODataset(TorchDataset):
     def __init__(self, hf_dataset, processor):
-        self.dataset = hf_dataset
         self.processor = processor
-        self.valid_indices = [
-            i
-            for i in range(len(hf_dataset))
-            if not hf_dataset[i].get("is_multiturn", False)
-        ]
+        
+        self.dataset = hf_dataset.filter(
+            lambda x: not x.get("is_multiturn", False),
+            desc="Filtering non-multiturn samples"
+        )
+        
+        print(f"✅ Filtered dataset: {len(self.dataset)} non-multiturn samples "
+              f"from {len(hf_dataset)} total samples")
 
     def __len__(self):
-        return len(self.valid_indices)
+        return len(self.dataset)
 
     def __getitem__(self, idx):
-        actual_idx = self.valid_indices[idx]
-        sample = self.dataset[actual_idx]
-
+        sample = self.dataset[idx]
+        
         image = sample["image"]
         if hasattr(image, "mode") and image.mode != "RGB":
             image = image.convert("RGB")
-
+        
         answer_text = sample.get("text")
         language = detect_language(answer_text)
-        system_prompt, user_prompt = get_system_and_user_prompt(language, sample=sample)
-
+        system_prompt, user_prompt = get_system_and_user_prompt(
+            language, sample=sample
+        )
+        
         messages = [
             {
                 "role": "system",
@@ -320,9 +322,9 @@ class LazyVisionGRPODataset(TorchDataset):
                 ],
             },
         ]
-
+        
         prompt_text = self.processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-
+        
         return {"prompt": prompt_text, "image": image, "answer": answer_text}

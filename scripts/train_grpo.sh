@@ -48,6 +48,47 @@ PUSH_TO_HUB=false
 HUB_MODEL_ID=""
 METRIC_FILE=""
 DATASET_CACHE_DIR=""
+MASTER_PORT=""  # Nếu để trống sẽ auto-detect giống train_multi_gpu.sh
+
+# Hàm tìm port rảnh (copy logic từ train_multi_gpu.sh)
+find_available_port() {
+    local start_port=${1:-29500}
+    local port=$start_port
+    local max_port=$((start_port + 100))
+
+    # Ưu tiên dùng lsof
+    if command -v lsof >/dev/null 2>&1; then
+        while [ $port -lt $max_port ]; do
+            if ! lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+                echo $port
+                return 0
+            fi
+            port=$((port + 1))
+        done
+    # Fallback sang netstat
+    elif command -v netstat >/dev/null 2>&1; then
+        while [ $port -lt $max_port ]; do
+            if ! netstat -tuln 2>/dev/null | grep -q ":$port "; then
+                echo $port
+                return 0
+            fi
+            port=$((port + 1))
+        done
+    # Cuối cùng dùng ss
+    elif command -v ss >/dev/null 2>&1; then
+        while [ $port -lt $max_port ]; do
+            if ! ss -tuln 2>/dev/null | grep -q ":$port "; then
+                echo $port
+                return 0
+            fi
+            port=$((port + 1))
+        done
+    fi
+
+    # Nếu không tìm được thì random
+    echo $((29500 + RANDOM % 1000))
+}
+
 # --- 2. PARSE ARGUMENTS ---
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -89,6 +130,7 @@ while [[ $# -gt 0 ]]; do
         --hub_model_id) HUB_MODEL_ID="$2"; shift 2 ;;
         --metric_file) METRIC_FILE="$2"; shift 2 ;;
         --dataset_cache_dir) DATASET_CACHE_DIR="$2"; shift 2 ;;
+        --master_port) MASTER_PORT="$2"; shift 2 ;;
         # --- ĐÃ THÊM PHẦN XỬ LÝ EVAL ---
         --eval_steps) EVAL_STEPS="$2"; shift 2 ;;
         --eval_batch_size) EVAL_BATCH_SIZE="$2"; shift 2 ;;
@@ -104,8 +146,14 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Auto-detect master port nếu chưa set
+if [ -z "$MASTER_PORT" ]; then
+    MASTER_PORT=$(find_available_port 29500)
+    echo "🔍 Auto-detected available master port: $MASTER_PORT"
+fi
+
 # --- 3. BUILD COMMAND ---
-CMD="torchrun --nproc_per_node=$NUM_GPUS qwen3_vl/train_qwen3_vl_grpo.py \
+CMD="torchrun --nproc_per_node=$NUM_GPUS --master_port=$MASTER_PORT qwen3_vl/train_qwen3_vl_grpo.py \
     --model_name $MODEL_NAME \
     --max_seq_length $MAX_SEQ_LENGTH \
     --dataset_name $DATASET_NAME \

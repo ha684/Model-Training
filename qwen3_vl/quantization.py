@@ -33,17 +33,15 @@ from llmcompressor.modifiers.quantization import QuantizationModifier, GPTQModif
 from llmcompressor.modifiers.smoothquant import SmoothQuantModifier
 from qwen_vl_utils import process_vision_info
 from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
-
-# Import utils functions
 from qwen3_vl.utils import detect_language, get_system_and_user_prompt
 
 
 MODEL_ID = "ha684/qwen3-vl-2b-22-01-26"
 DATASET_ID = "ha684/vl-vi-en-ja-conv-mix-v1.3"
-OUTPUT_DIR = "vlm-w8a8-int8"
-REPO_ID = "ha684/qwen3-vl-2b-22-01-26-w8a8-int8"
+OUTPUT_DIR = "vlm-w8a8-int8-V1"
+REPO_ID = "ha684/qwen3-vl-2b-22-01-26-w8a8-int8-V1"
 MAX_SEQ_LEN = 16384
-NUM_CALIB = 256
+NUM_CALIB = 512
 
 
 def main():
@@ -170,13 +168,14 @@ def main():
         remove_columns=ds.column_names,
         desc="Tokenizing",
         num_proc=4,
-        batched=False
+        batched=False,
+        writer_batch_size=50,
     )
     
     print(f"✅ Using {len(calib_ds)} calibration samples")
 
     def data_collator(batch):
-        assert len(batch) == 1
+        # assert len(batch) == 1
         return {
             key: (
                 torch.tensor(value)
@@ -186,16 +185,26 @@ def main():
             for key, value in batch[0].items()
         }
 
-    recipe = GPTQModifier(
-        targets="Linear",
-        scheme="W8A8",
-        ignore=[
-            "re:.*lm_head",
-            "re:visual.*",
-            "re:model.visual.*",
-            "re:.*mlp.gate$",
-        ],
-    )
+    recipe = [
+        SmoothQuantModifier(
+            smoothing_strength=0.8,
+            ignore=[
+                "re:.*visual.*",
+                "re:model.visual.*",
+                "re:.*vision.*",
+            ],
+        ),
+        QuantizationModifier(
+            targets="Linear",
+            scheme="W8A8",
+            ignore=[
+                "re:.*lm_head",
+                "re:.*visual.*",
+                "re:model.visual.*",
+                "re:.*mlp.gate$",
+            ],
+        ),
+    ]
 
     oneshot(
         model=model,
@@ -204,11 +213,14 @@ def main():
         max_seq_length=MAX_SEQ_LEN,
         num_calibration_samples=NUM_CALIB,
         data_collator=data_collator,
+        pipeline="basic",
+        batch_size=16,
+        preprocessing_num_workers=4,
     )
 
     print(f"✅ Saving to {OUTPUT_DIR}...")
-    model.save_pretrained(OUTPUT_DIR, save_compressed=True)
-    processor.save_pretrained(OUTPUT_DIR)
+    model.save_pretrained(save_directory=OUTPUT_DIR, push_to_hub=False, repo_id=REPO_ID)
+    processor.save_pretrained(save_directory=OUTPUT_DIR, push_to_hub=False, repo_id=REPO_ID)
 
     if REPO_ID:
         print(f"☁️  Pushing to Hub: {REPO_ID}")
