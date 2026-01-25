@@ -40,7 +40,7 @@ MODEL_ID = "ha684/qwen3-vl-2b-22-01-26"
 DATASET_ID = "ha684/vl-vi-en-ja-conv-mix-v1.3"
 OUTPUT_DIR = "vlm-w8a8-int8-V1"
 REPO_ID = "ha684/qwen3-vl-2b-22-01-26-w8a8-int8-V1"
-MAX_SEQ_LEN = 16384
+MAX_SEQ_LEN = 8192
 NUM_CALIB = 512
 
 
@@ -59,7 +59,6 @@ def main():
         trust_remote_code=True,
         cache_dir=LOCAL_CACHE_DIR,
     )
-    print(f"Tổng số visual blocks: {len(model.visual.blocks)}")
     print(f"✅ Model loaded on device: {model.device}")
 
     def preprocess_and_tokenize(example):
@@ -144,10 +143,10 @@ def main():
             return processor(
                 text=[text],
                 images=image_inputs,
-                videos=video_inputs,
+                videos=None,
                 padding=False,
                 max_length=MAX_SEQ_LEN,
-                truncation=True,
+                truncation=False,
             )
         except Exception as e:
             print(f"Error processing example: {e}")
@@ -175,7 +174,7 @@ def main():
     print(f"✅ Using {len(calib_ds)} calibration samples")
 
     def data_collator(batch):
-        # assert len(batch) == 1
+        assert len(batch) == 1
         return {
             key: (
                 torch.tensor(value)
@@ -186,14 +185,6 @@ def main():
         }
 
     recipe = [
-        SmoothQuantModifier(
-            smoothing_strength=0.8,
-            ignore=[
-                "re:.*visual.*",
-                "re:model.visual.*",
-                "re:.*vision.*",
-            ],
-        ),
         QuantizationModifier(
             targets="Linear",
             scheme="W8A8",
@@ -213,9 +204,6 @@ def main():
         max_seq_length=MAX_SEQ_LEN,
         num_calibration_samples=NUM_CALIB,
         data_collator=data_collator,
-        pipeline="basic",
-        batch_size=16,
-        preprocessing_num_workers=4,
     )
 
     print(f"✅ Saving to {OUTPUT_DIR}...")

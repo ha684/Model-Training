@@ -1,9 +1,9 @@
-# qwen3-vl/train_qwen3_vl_ddp.py
 #!/usr/bin/env python3
 """
 Fine-tune Qwen3-VL Vision Language Model with Multi-GPU support using Supervised Fine-Tuning (SFT)
 """
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -35,7 +35,7 @@ import mlflow
 import torch.distributed as dist
 from datasets import load_dataset
 from transformers import EarlyStoppingCallback
-from transformers.trainer_utils import get_last_checkpoint
+from qwen3_vl.utils import get_best_checkpoint
 from trl import SFTConfig, SFTTrainer
 
 from qwen3_vl.training_utils import (
@@ -44,11 +44,9 @@ from qwen3_vl.training_utils import (
     init_model,
     parse_common_args,
     setup_mlflow,
-    MetricFileAndMLflowCallback,
 )
 
 from qwen3_vl.utils import LazyVisionDataset
-
 
 def parse_args():
     """Parse command line arguments for SFT training"""
@@ -58,7 +56,6 @@ def parse_args():
 
     parser = parse_common_args(parser)
     return parser.parse_args()
-
 
 def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
     if local_rank == 0:
@@ -121,6 +118,7 @@ def build_trainer(
         "save_total_limit": 1,
         "run_name": args.mlflow_run_name,
         "overwrite_output_dir": False, 
+        "max_grad_norm": 1.0, 
         **precision_settings,
     }
 
@@ -135,6 +133,13 @@ def build_trainer(
     training_args = SFTConfig(**training_config)
 
     effective_batch = args.batch_size * args.grad_accum * world_size
+    
+    dataset_size = len(train_dataset)
+    if args.max_steps > 0:
+        total_training_steps = args.max_steps
+    else:
+        steps_per_epoch = (dataset_size + effective_batch - 1) // effective_batch
+        total_training_steps = int(steps_per_epoch * args.epochs)
 
     precision_mode = (
         "bf16"
@@ -143,7 +148,7 @@ def build_trainer(
     )
 
     optimizer, scheduler = create_custom_optimizer_and_scheduler(
-        model, args, effective_batch
+        model, args, total_training_steps
     )
 
     if dist.get_rank() == 0:
@@ -153,23 +158,28 @@ def build_trainer(
         print(f"   - Per device batch size: {args.batch_size}")
         print(f"   - Gradient accumulation: {args.grad_accum}")
         print(f"   - Effective batch size: {effective_batch}")
+        print(f"   - Dataset size: {dataset_size}")
+        print(f"   - Total training steps: {total_training_steps}")
         print(f"   - Learning rate: {args.learning_rate}")
+        print(f"   - Max grad norm: 1.0")
         if args.max_steps > 0:
             print(f"   - Max steps: {args.max_steps}")
         else:
             print(f"   - Epochs: {args.epochs}")
         print(f"   - Max sequence length: {args.max_seq_length}")
-
+        
+    collator = UnslothVisionDataCollator(model, tokenizer)
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
-        data_collator=UnslothVisionDataCollator(model, tokenizer),
+        data_collator=collator,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         args=training_args,
         callbacks=[
-            EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=1e-4),
-            MetricFileAndMLflowCallback(metric_file=args.metric_file, enabled=(args.metric_file is not None)),
+            EarlyStoppingCallback(
+                early_stopping_patience=3, early_stopping_threshold=1e-4
+            )
         ],
         optimizers=(optimizer, scheduler),
     )
@@ -197,22 +207,18 @@ def main():
         print(f"💾 Local Cache: {os.environ['HF_HOME']}") 
         print("=" * 70)
         print()
-        
-    run_id = os.environ.get("MLFLOW_RUN_ID")
-    if args.report_to == "mlflow" and rank == 0 and run_id:
-        try:
-            # attach, KHÔNG end_run ở script con
-            mlflow.start_run(run_id=run_id)
-            print(f"🔗 Attached to MLflow run from coordinator: {run_id}")
-        except Exception as e:
-            print(f"⚠️ Could not attach to MLflow run_id={run_id}: {e}")
-            
-    last_checkpoint = None
-    if os.path.isdir(args.output_dir):
-        last_checkpoint = get_last_checkpoint(args.output_dir)
-        if last_checkpoint is not None and rank == 0:
+
+    last_checkpoint = get_best_checkpoint(args.output_dir)
+    if last_checkpoint and rank == 0:
+        state_file = os.path.join(last_checkpoint, "trainer_state.json")
+        if os.path.exists(state_file):
+            with open(state_file, 'r') as f:
+                state = json.load(f)
+                step = state.get('global_step', '?')
+                print(f"♻️  Found checkpoint at step {step}: {last_checkpoint}")
+        else:
             print(f"♻️  Found checkpoint: {last_checkpoint}")
-            print("🚀 Resuming training from the latest checkpoint...")
+        print("🚀 Resuming training from the latest checkpoint...")
 
     if rank == 0:
         print("🚀 Initializing model and tokenizer...")
@@ -239,13 +245,7 @@ def main():
     interrupted = False
 
     try:
-        try:
-            from unsloth import unsloth_train
-            trainer_stats = trainer.train(resume_from_checkpoint=last_checkpoint)
-        except ImportError:
-            if rank == 0:
-                print("⚠️  unsloth not available or failed. Using trl's trainer.")
-            trainer_stats = trainer.train(resume_from_checkpoint=last_checkpoint)
+        trainer_stats = trainer.train(resume_from_checkpoint=last_checkpoint)
 
     except KeyboardInterrupt:
         interrupted = True
@@ -254,17 +254,15 @@ def main():
             print("🛑 Caught KeyboardInterrupt (Ctrl+C)!")
             print("💾 Saving current state to checkpoint before exiting...")
             print("!" * 80)
-            
-            # Lưu model và state để resume sau này
-            trainer.save_model(args.output_dir)
-            trainer.save_state() 
-            
-            if args.save_model:
-                print(f"💾 Saving final model wrapper to {args.model_save_path}...")
-                model.save_pretrained(args.model_save_path)
-                tokenizer.save_pretrained(args.model_save_path)
 
-            print("✅ Emergency save completed.")
+            current_step = trainer.state.global_step
+            emergency_checkpoint = os.path.join(args.output_dir, f"checkpoint-{current_step}")
+            
+            print(f"💾 Saving emergency checkpoint to: {emergency_checkpoint}")
+            trainer._save_checkpoint(trainer.model, trial=None)
+            
+            print(f"✅ Emergency checkpoint saved at step {current_step}.")
+            print(f"💡 To resume: just run the script again, it will auto-load from step {current_step}")
 
     if not interrupted:
         if rank == 0:
@@ -277,10 +275,8 @@ def main():
             print(f"📉 Final Eval Loss: {final_eval_loss}")
 
             if args.metric_file:
-                import json
-                with open(args.metric_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"step": int(trainer.state.global_step), "eval_loss": float(final_eval_loss)}) + "\n")
-
+                with open(args.metric_file, "w") as f:
+                    json.dump({"eval_loss": final_eval_loss}, f)
 
             print()
             print("✅ Training completed!")
@@ -328,11 +324,32 @@ def main():
                         print("✅ LoRA adapter pushed to Hub completed!")
                     except Exception as e:
                         print(f"⚠️ Failed to push to hub: {e}")
-                        
-    if args.report_to == "mlflow" and rank == 0 and mlflow.active_run():
-        mlflow.log_metrics(metrics)
-        mlflow.log_metric("final_eval_loss", float(final_eval_loss), step=int(trainer.state.global_step))
-        
+
+    if args.report_to == "mlflow" and rank == 0:
+        print("📝 Logging final metrics to MLflow...")
+
+        def upload_and_cleanup():
+            if 'metrics' in locals():
+                print("📊 Logging eval metrics directly to run...")
+                mlflow.log_metrics(metrics)
+            
+            print("💾 Files kept locally. No upload performed.")
+
+        if mlflow.active_run():
+            print(
+                f"🔗 Attaching to CURRENT active run: {mlflow.active_run().info.run_id}"
+            )
+            upload_and_cleanup()
+            mlflow.end_run()
+        else:
+            last_run = mlflow.last_active_run()
+            if last_run:
+                print(f"🔄 Re-opening LAST run: {last_run.info.run_id}")
+                with mlflow.start_run(run_id=last_run.info.run_id):
+                    upload_and_cleanup()
+            else:
+                print("⚠️ Could not find any MLflow run to log metrics.")
+
     if rank == 0:
         print("\n" + "=" * 70)
         if interrupted:

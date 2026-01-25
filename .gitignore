@@ -58,3 +58,8 @@ merged_dataset/
 
 *.png
 crawl/
+
+# Pipeline artifacts
+runs/
+*.db
+.prefect/

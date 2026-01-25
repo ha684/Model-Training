@@ -9,6 +9,7 @@ Optimized with concurrent requests.
 
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -18,7 +19,7 @@ import json
 import os
 from collections import defaultdict
 from io import BytesIO
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["UNSLOTH_STABLE_DOWNLOADS"] = "1"
@@ -47,6 +48,30 @@ TIMEOUT = 180
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 
+def configure_runtime(
+    base_url_override: Optional[str] = None,
+    model_name_override: Optional[str] = None,
+    max_concurrent_requests: Optional[int] = None,
+    timeout_sec: Optional[int] = None,
+) -> None:
+    """Override runtime settings for evaluation."""
+    global base_url
+    global VLLM_API_URL
+    global MODEL_NAME
+    global MAX_CONCURRENT_REQUESTS
+    global TIMEOUT
+
+    if base_url_override:
+        base_url = base_url_override
+        VLLM_API_URL = f"{base_url}/v1/chat/completions"
+    if model_name_override:
+        MODEL_NAME = model_name_override
+    if max_concurrent_requests is not None:
+        MAX_CONCURRENT_REQUESTS = max_concurrent_requests
+    if timeout_sec is not None:
+        TIMEOUT = timeout_sec
+
+
 def image_to_base64(image) -> str:
     """Convert PIL Image to base64 string."""
     if isinstance(image, dict):
@@ -71,7 +96,7 @@ async def call_vllm_api_async(
     system_prompt: str,
     user_prompt: str,
     retry_count: int = 0,
-) -> str:
+) -> Optional[Dict[str, Any]]:
     """Call vLLM API with image and prompts asynchronously with retry logic."""
     image_base64 = image_to_base64(image)
 
@@ -103,14 +128,20 @@ async def call_vllm_api_async(
             "Authorization": f"Bearer {os.getenv('api_key', '')}",
             "Content-Type": "application/json",
         }
+        start_time = time.perf_counter()
         async with session.post(
             VLLM_API_URL,
             json=payload,
+            headers=headers,
             timeout=aiohttp.ClientTimeout(total=TIMEOUT),
         ) as response:
             response.raise_for_status()
             result = await response.json()
-            return result["choices"][0]["message"]["content"]
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            return {
+                "content": result["choices"][0]["message"]["content"],
+                "latency_ms": latency_ms,
+            }
     except Exception as e:
         if retry_count < MAX_RETRIES:
             print(
@@ -434,12 +465,10 @@ async def evaluate_single_async(
         print(f"Failed to parse ground truth: {e}")
         return None
 
-    # Detect language from ground truth keys
     language = detect_language(gt_data)
 
-    # Get appropriate prompts for the detected language
     system_prompt, user_prompt = get_system_and_user_prompt(language, sample=gt_data)
-    # Check if ground truth has table_rows
+
     gt_has_table_rows = bool(gt_data.get("table_rows"))
 
     try:
@@ -479,7 +508,7 @@ async def evaluate_single_async(
                     "gt_has_table_rows": gt_has_table_rows,
                 }
 
-        pred_data = parse_model_output(model_output)
+        pred_data = parse_model_output(model_output["content"])
 
         # Validate that pred_data is a dictionary (not None, string, or other type)
         if pred_data is None or not isinstance(pred_data, dict):
@@ -565,6 +594,7 @@ async def evaluate_single_async(
             "gt_has_table_rows": gt_has_table_rows,
             "pred_has_table_rows": pred_has_table_rows,
             "table_structure_correct": table_structure_correct,
+            "latency_ms": model_output.get("latency_ms"),
         }
     except Exception as e:
         # Retry on any unexpected error
@@ -668,23 +698,10 @@ async def evaluate_dataset_async(dataset):
     return all_results
 
 
-def main():
-    """Main evaluation loop."""
-    print(f"Loading dataset: {DATASET_NAME} ({DATASET_SPLIT})")
-    dataset = load_dataset(
-        "parquet",
-        data_files={"test": f"hf://datasets/{DATASET_NAME}/data/test-*.parquet"},
-        split="test",
-    )
-
-    print(f"Dataset loaded: {len(dataset)} examples")
-    print(f"Columns: {dataset.column_names}")
-    print(f"Concurrent requests: {MAX_CONCURRENT_REQUESTS}")
-
-    print("\nStarting evaluation...")
-    results = asyncio.run(evaluate_dataset_async(dataset))
-
-    total_examples = len(dataset)
+def summarize_results(
+    results: List[Dict],
+    total_examples: int,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     successful_parses = 0
     skipped_examples = 0
     metadata_field_scores = defaultdict(list)
@@ -692,6 +709,7 @@ def main():
     total_rows_count = 0
     table_structure_correct_count = 0
     table_structure_total_count = 0
+    latency_ms_values: List[float] = []
 
     # Track stats by language
     language_stats = defaultdict(
@@ -746,6 +764,9 @@ def main():
                 total_rows_count += rows_total
                 language_stats[language]["rows_correct"] += rows_correct
                 language_stats[language]["rows_total"] += rows_total
+
+            if result.get("latency_ms") is not None:
+                latency_ms_values.append(result["latency_ms"])
         else:
             # Count failed evaluations
             if "error" in result:
@@ -775,6 +796,7 @@ def main():
         accuracy = np.mean(scores) * 100
         print(f"  {field:30s}: {accuracy:5.1f}% ({sum(scores)}/{len(scores)})")
 
+    overall_metadata = None
     if metadata_field_scores:
         overall_metadata = (
             np.mean([np.mean(scores) for scores in metadata_field_scores.values()])
@@ -847,7 +869,6 @@ def main():
             )
 
     # Save results
-    output_file = "evaluation_results.json"
     simplified_results = []
     for i, r in enumerate(results):
         if r is not None:
@@ -863,7 +884,9 @@ def main():
                         break
 
                 if r.get("table_rows_total", 0) > 0:
-                    if r.get("table_rows_correct", 0) < r.get("table_rows_total", 0):
+                    if r.get("table_rows_correct", 0) < r.get(
+                        "table_rows_total", 0
+                    ):
                         has_error = True
 
             if has_error:
@@ -886,52 +909,97 @@ def main():
                     }
                 )
 
+    p95_latency_ms = None
+    if latency_ms_values:
+        p95_latency_ms = float(np.percentile(latency_ms_values, 95))
+
+    format_pass_rate = (
+        successful_parses / evaluated_examples if evaluated_examples > 0 else 0
+    )
+
+    summary = {
+        "total_examples": total_examples,
+        "skipped_examples": skipped_examples,
+        "evaluated_examples": evaluated_examples,
+        "successful_parses": successful_parses,
+        "total_errors": len(simplified_results),
+        "metadata_accuracy": {
+            k: np.mean(v) * 100 for k, v in metadata_field_scores.items()
+        },
+        "overall_metadata_accuracy": overall_metadata,
+        "table_rows_accuracy": 100 * total_rows_correct / total_rows_count
+        if total_rows_count > 0
+        else 0,
+        "table_structure_accuracy": 100
+        * table_structure_correct_count
+        / table_structure_total_count
+        if table_structure_total_count > 0
+        else 0,
+        "language_breakdown": {
+            lang: {
+                "total": stats["total"],
+                "successful": stats["successful"],
+                "metadata_accuracy": {
+                    k: np.mean(v) * 100 for k, v in stats["metadata_scores"].items()
+                }
+                if stats["metadata_scores"]
+                else {},
+                "table_rows_accuracy": 100 * stats["rows_correct"] / stats["rows_total"]
+                if stats["rows_total"] > 0
+                else 0,
+                "table_structure_accuracy": 100
+                * stats["table_structure_correct"]
+                / stats["table_structure_total"]
+                if stats["table_structure_total"] > 0
+                else 0,
+            }
+            for lang, stats in language_stats.items()
+        },
+        "p95_latency_ms": p95_latency_ms,
+        "format_pass_rate": format_pass_rate,
+    }
+
+    return summary, simplified_results
+
+
+def run_evaluation(
+    dataset,
+    max_samples: Optional[int] = None,
+    max_concurrent_requests: Optional[int] = None,
+) -> Dict[str, Any]:
+    if max_samples is not None:
+        dataset = dataset.select(range(min(max_samples, len(dataset))))
+
+    if max_concurrent_requests is not None:
+        configure_runtime(max_concurrent_requests=max_concurrent_requests)
+
+    print("\nStarting evaluation...")
+    results = asyncio.run(evaluate_dataset_async(dataset))
+    summary, simplified_results = summarize_results(results, len(dataset))
+    return {"summary": summary, "errors": simplified_results}
+
+
+def main():
+    """Main evaluation loop."""
+    print(f"Loading dataset: {DATASET_NAME} ({DATASET_SPLIT})")
+    dataset = load_dataset(
+        "parquet",
+        data_files={"test": f"hf://datasets/{DATASET_NAME}/data/test-*.parquet"},
+        split="test",
+    )
+
+    print(f"Dataset loaded: {len(dataset)} examples")
+    print(f"Columns: {dataset.column_names}")
+    print(f"Concurrent requests: {MAX_CONCURRENT_REQUESTS}")
+
+    output = run_evaluation(dataset)
+    summary = output["summary"]
+    simplified_results = output["errors"]
+
+    output_file = "evaluation_results.json"
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(
-            {
-                "summary": {
-                    "total_examples": total_examples,
-                    "skipped_examples": skipped_examples,
-                    "evaluated_examples": evaluated_examples,
-                    "successful_parses": successful_parses,
-                    "total_errors": len(simplified_results),
-                    "metadata_accuracy": {
-                        k: np.mean(v) * 100 for k, v in metadata_field_scores.items()
-                    },
-                    "table_rows_accuracy": 100 * total_rows_correct / total_rows_count
-                    if total_rows_count > 0
-                    else 0,
-                    "table_structure_accuracy": 100
-                    * table_structure_correct_count
-                    / table_structure_total_count
-                    if table_structure_total_count > 0
-                    else 0,
-                    "language_breakdown": {
-                        lang: {
-                            "total": stats["total"],
-                            "successful": stats["successful"],
-                            "metadata_accuracy": {
-                                k: np.mean(v) * 100
-                                for k, v in stats["metadata_scores"].items()
-                            }
-                            if stats["metadata_scores"]
-                            else {},
-                            "table_rows_accuracy": 100
-                            * stats["rows_correct"]
-                            / stats["rows_total"]
-                            if stats["rows_total"] > 0
-                            else 0,
-                            "table_structure_accuracy": 100
-                            * stats["table_structure_correct"]
-                            / stats["table_structure_total"]
-                            if stats["table_structure_total"] > 0
-                            else 0,
-                        }
-                        for lang, stats in language_stats.items()
-                    },
-                },
-                "errors": simplified_results,
-            },
+            {"summary": summary, "errors": simplified_results},
             f,
             ensure_ascii=False,
             indent=2,

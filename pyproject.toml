@@ -24,4 +24,7 @@ dependencies = [
     "qwen-vl-utils>=0.0.14",
     "seaborn>=0.13.2",
     "jiwer>=4.0.0",
+    "prefect>=2.0.0",
+    "pyyaml>=6.0.1",
+    "prefetch>=0.0",
 ]

@@ -1,19 +1,9 @@
-# qwen3_vl/train_qwen3_vl_grpo.py
 #!/usr/bin/env python3
 import argparse
 import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Tuple
-
-from unsloth import FastVisionModel
-import mlflow
-import torch.distributed as dist
-from datasets import load_dataset
-from transformers import AutoProcessor
-from transformers.trainer_utils import get_last_checkpoint
-from trl import GRPOConfig, GRPOTrainer
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -24,15 +14,21 @@ if not os.path.exists(LOCAL_CACHE_DIR):
     os.makedirs(LOCAL_CACHE_DIR)
     print(f"📁 Created local cache directory: {LOCAL_CACHE_DIR}")
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["UNSLOTH_STABLE_DOWNLOADS"] = "1"
 os.environ["HF_HUB_DISABLE_XET"] = "1"
-os.environ["MLFLOW_TRACKING_USERNAME"] = "robotpro682004"
-os.environ["MLFLOW_TRACKING_PASSWORD"] = "59d3b474fda55ef9e051969b30b778bc42763e2d"
+
+os.environ["MLFLOW_TRACKING_USERNAME"]="robotpro682004"
+os.environ["MLFLOW_TRACKING_PASSWORD"]="59d3b474fda55ef9e051969b30b778bc42763e2d"
 os.environ["HF_HOME"] = LOCAL_CACHE_DIR
 os.environ["HF_DATASETS_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "datasets")
 os.environ["HF_HUB_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "hub")
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 
+from unsloth import FastVisionModel
+import mlflow
+import torch.distributed as dist
+from datasets import load_dataset
 from qwen3_vl.reward_functions import (
     format_reward_func,
     metadata_reward_func,
@@ -45,6 +41,9 @@ from qwen3_vl.training_utils import (
     setup_mlflow,
 )
 from qwen3_vl.utils import LazyVisionGRPODataset
+from transformers import AutoProcessor
+from trl import GRPOConfig, GRPOTrainer
+from qwen3_vl.utils import get_best_checkpoint
 
 
 def parse_args():
@@ -107,40 +106,35 @@ def parse_args():
 
     return parser.parse_args()
 
-
-def prepare_datasets(args: argparse.Namespace, local_rank: int) -> Tuple[Any, Any]:
+def prepare_datasets(args: argparse.Namespace, local_rank: int):
+    """Improved dataset preparation with lazy loading"""
+    
     if local_rank == 0:
         print(f"📊 Loading dataset: {args.dataset_name}")
-
+    
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
     train_dataset = load_dataset(
-        args.dataset_name, split="train", cache_dir=args.dataset_cache_dir
+        args.dataset_name,
+        split="train",
+        cache_dir=args.dataset_cache_dir
     )
-    eval_dataset = load_dataset(
-        args.dataset_name, split="test", cache_dir=args.dataset_cache_dir
-    )
-
+    
     if local_rank == 0:
-        print(f"✅ Found {len(train_dataset)} training samples")
-        print(f"✅ Found {len(eval_dataset)} validation samples")
-
-    processor = AutoProcessor.from_pretrained(args.model_name)
-    lazy_train = LazyVisionGRPODataset(train_dataset, processor)
-    lazy_eval = LazyVisionGRPODataset(eval_dataset, processor)
-
+        print(f"✅ Loaded {len(train_dataset)} total samples")
+    processor = AutoProcessor.from_pretrained(args.model_name, cache_dir=LOCAL_CACHE_DIR)
+    lazy_dataset = LazyVisionGRPODataset(train_dataset, processor)
+    
     if local_rank == 0:
-        print("✅ Datasets wrapped with lazy loading (images loaded on-demand)")
-
-    return lazy_train, lazy_eval
-
+        print(f"✅ Prepared {len(lazy_dataset)} training samples (lazy-loaded)")
+    
+    return lazy_dataset
 
 def build_grpo_trainer(
     model,
     tokenizer,
     train_dataset,
-    eval_dataset,
     args: argparse.Namespace,
     world_size: int,
     local_rank: int = 0,
@@ -173,14 +167,14 @@ def build_grpo_trainer(
         "save_total_limit": 1,
         "load_best_model_at_end": False,
         "remove_unused_columns": False,
-        "eval_strategy": "no",
         "eval_steps": args.eval_steps,
+        "eval_strategy": "no",
+        "temperature": 1.6,
         "save_strategy": "steps",
-        "temperature": 1.0,
         "overwrite_output_dir": False,
         "metric_for_best_model": "eval_loss",
         "greater_is_better": False,
-        "beta": 0.1,
+        "beta": 0.01,
         **precision_settings,
     }
 
@@ -233,7 +227,6 @@ def build_grpo_trainer(
         ],
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
         processing_class=tokenizer,
     )
 
@@ -262,27 +255,32 @@ def main():
         print("=" * 70)
         print()
 
-    last_checkpoint = None
-    if os.path.isdir(args.output_dir):
-        last_checkpoint = get_last_checkpoint(args.output_dir)
-        if last_checkpoint is not None and rank == 0:
+    last_checkpoint = get_best_checkpoint(args.output_dir)
+    if last_checkpoint and rank == 0:
+        state_file = os.path.join(last_checkpoint, "trainer_state.json")
+        if os.path.exists(state_file):
+            with open(state_file, 'r') as f:
+                state = json.load(f)
+                step = state.get('global_step', '?')
+                print(f"♻️  Found checkpoint at step {step}: {last_checkpoint}")
+        else:
             print(f"♻️  Found checkpoint: {last_checkpoint}")
-            print("🚀 Resuming GRPO training from the latest checkpoint...")
+        print("🚀 Resuming GRPO training from the latest checkpoint...")
 
     if rank == 0:
         print("🚀 Initializing model and tokenizer...")
     model, tokenizer = init_model(args, local_rank, load_in_4bit=False)
-
+        
     if rank == 0:
         print("📊 Preparing GRPO dataset...")
-    train_dataset, eval_dataset = prepare_datasets(args, local_rank)
+    train_dataset = prepare_datasets(args, local_rank)
 
     if rank == 0:
         print("🔨 Building GRPO trainer...")
 
     FastVisionModel.for_training(model)
     trainer = build_grpo_trainer(
-        model, tokenizer, train_dataset, eval_dataset, args, world_size, local_rank=rank
+        model, tokenizer, train_dataset, args, world_size, local_rank=rank
     )
 
     if rank == 0:
@@ -303,16 +301,15 @@ def main():
             print("💾 Saving current state to checkpoint before exiting...")
             print("!" * 80)
 
-            trainer.save_model(args.output_dir)
-            trainer.save_state()
-
-            if args.save_model:
-                print(f"💾 Saving final model wrapper to {args.model_save_path}...")
-                model.save_pretrained(args.model_save_path)
-                tokenizer.save_pretrained(args.model_save_path)
-
-            print("✅ Emergency save completed.")
-
+            current_step = trainer.state.global_step
+            emergency_checkpoint = os.path.join(args.output_dir, f"checkpoint-{current_step}")
+            
+            print(f"💾 Saving emergency checkpoint to: {emergency_checkpoint}")
+            trainer._save_checkpoint(trainer.model, trial=None)
+            
+            print(f"✅ Emergency checkpoint saved at step {current_step}.")
+            print(f"💡 To resume: just run the script again, it will auto-load from step {current_step}")
+            
     if not interrupted:
         if rank == 0:
             print()
@@ -335,6 +332,7 @@ def main():
             tokenizer.save_pretrained(args.model_save_path)
             print("✅ Model saved successfully!")
 
+        # Push to Hub
         if args.push_to_hub and args.hub_model_id and rank == 0:
             hf_token = args.hf_token or os.environ.get("HF_TOKEN")
             if not hf_token:

@@ -8,3 +8,5 @@ optuna
 optuna-integration[mlflow]
 dagshub
 jiwer
+prefect
+pyyaml

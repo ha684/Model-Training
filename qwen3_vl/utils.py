@@ -1,4 +1,5 @@
 import json
+import os
 from typing import Dict, List, Tuple
 
 from config import (
@@ -6,7 +7,9 @@ from config import (
     FieldDefinition,
     generate_extraction_prompt,
 )
+from datasets import Dataset as HuggingFaceDataset
 from torch.utils.data import Dataset as TorchDataset
+from transformers import AutoProcessor
 
 
 def detect_language(data: Dict | str) -> str:
@@ -34,7 +37,7 @@ def detect_language(data: Dict | str) -> str:
             if isinstance(item, dict):
                 all_keys.extend(item.keys())
         elif isinstance(metadata, dict):
-             all_keys.extend(metadata.keys())
+            all_keys.extend(metadata.keys())
 
     table_rows = data.get("table_rows", [])
     if table_rows and isinstance(table_rows, list) and len(table_rows) > 0:
@@ -111,7 +114,7 @@ def detect_fields_in_sample(
             structured_output = json.loads(structured_output)
         except:
             return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
-    
+
     if not isinstance(structured_output, dict):
         return [f for f in FIELD_DEFINITIONS if f.key == "product_code"]
 
@@ -131,7 +134,9 @@ def detect_fields_in_sample(
 
     table_rows = structured_output.get("table_rows", [])
 
-    product_code_field = next((f for f in FIELD_DEFINITIONS if f.key == "product_code"), None)
+    product_code_field = next(
+        (f for f in FIELD_DEFINITIONS if f.key == "product_code"), None
+    )
     if product_code_field:
         present_fields.append(product_code_field)
 
@@ -149,6 +154,7 @@ def detect_fields_in_sample(
                             break
 
     return present_fields
+
 
 def get_system_and_user_prompt(
     language: str, sample: Dict = None, custom_fields: List[FieldDefinition] = None
@@ -264,6 +270,7 @@ def convert_to_conversation(sample: Dict) -> Dict:
         print("=" * 60 + "\n")
         raise e
 
+
 class LazyVisionDataset(TorchDataset):
     def __init__(self, hf_dataset):
         self.dataset = hf_dataset
@@ -281,17 +288,19 @@ class LazyVisionDataset(TorchDataset):
             return ["messages"]
         return ["messages"]
 
+
 class LazyVisionGRPODataset(TorchDataset):
-    def __init__(self, hf_dataset, processor):
-        self.processor = processor
-        
+    def __init__(self, hf_dataset: HuggingFaceDataset, tokenizer: AutoProcessor):
+        self.tokenizer = tokenizer
+
         self.dataset = hf_dataset.filter(
             lambda x: not x.get("is_multiturn", False),
-            desc="Filtering non-multiturn samples"
+            desc="Filtering non-multiturn samples")
+
+        print(
+            f"✅ Filtered dataset: {len(self.dataset)} non-multiturn samples "
+            f"from {len(hf_dataset)} total samples"
         )
-        
-        print(f"✅ Filtered dataset: {len(self.dataset)} non-multiturn samples "
-              f"from {len(hf_dataset)} total samples")
 
     def __len__(self):
         return len(self.dataset)
@@ -300,14 +309,16 @@ class LazyVisionGRPODataset(TorchDataset):
         sample = self.dataset[idx]
         
         image = sample["image"]
+        
+        if hasattr(image, "resize"):
+            image = image.resize((512, 512))
+        
         if hasattr(image, "mode") and image.mode != "RGB":
             image = image.convert("RGB")
         
-        answer_text = sample.get("text")
+        answer_text = sample.get("text", "")
         language = detect_language(answer_text)
-        system_prompt, user_prompt = get_system_and_user_prompt(
-            language, sample=sample
-        )
+        system_prompt, user_prompt = get_system_and_user_prompt(language, sample=sample)
         
         messages = [
             {
@@ -317,14 +328,55 @@ class LazyVisionGRPODataset(TorchDataset):
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": image},
+                    {"type": "image"},
                     {"type": "text", "text": user_prompt},
                 ],
             },
         ]
         
-        prompt_text = self.processor.apply_chat_template(
+        prompt_text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
+
+        return {
+            "prompt": prompt_text,
+            "image": image,
+            "answer": answer_text
+        }
         
-        return {"prompt": prompt_text, "image": image, "answer": answer_text}
+
+
+def get_best_checkpoint(output_dir: str) -> str:
+    """
+    """
+    if not os.path.isdir(output_dir):
+        return None
+    
+    checkpoints = []
+    
+    for item in os.listdir(output_dir):
+        path = os.path.join(output_dir, item)
+        if os.path.isdir(path) and item.startswith("checkpoint-"):
+            try:
+                step = int(item.split("-")[-1])
+                checkpoints.append((step, path))
+            except ValueError:
+                continue
+    
+    emergency_state = os.path.join(output_dir, "trainer_state.json")
+    if os.path.exists(emergency_state):
+        try:
+            with open(emergency_state, 'r') as f:
+                state = json.load(f)
+                global_step = state.get('global_step', 0)
+                checkpoints.append((global_step, output_dir))
+        except:
+            pass
+    
+    if not checkpoints:
+        return None
+    
+    checkpoints.sort(key=lambda x: x[0], reverse=True)
+    best_step, best_path = checkpoints[0]
+    
+    return best_path
