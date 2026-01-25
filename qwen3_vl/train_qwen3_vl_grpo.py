@@ -169,12 +169,12 @@ def build_grpo_trainer(
         "remove_unused_columns": False,
         "eval_steps": args.eval_steps,
         "eval_strategy": "no",
-        "temperature": 1.6,
+        "temperature": 1.0,
         "save_strategy": "steps",
         "overwrite_output_dir": False,
         "metric_for_best_model": "eval_loss",
         "greater_is_better": False,
-        "beta": 0.01,
+        "beta": 0.1,
         **precision_settings,
     }
 
@@ -332,7 +332,6 @@ def main():
             tokenizer.save_pretrained(args.model_save_path)
             print("✅ Model saved successfully!")
 
-        # Push to Hub
         if args.push_to_hub and args.hub_model_id and rank == 0:
             hf_token = args.hf_token or os.environ.get("HF_TOKEN")
             if not hf_token:
