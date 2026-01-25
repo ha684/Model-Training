@@ -26,7 +26,9 @@ from pipeline.tasks import (
     wait_for_health,
     wait_hf_model_ready,
 )
+from dotenv import load_dotenv
 
+load_dotenv()
 
 def _build_eval_paths(run_dir: Path) -> Dict[str, str]:
     return {
@@ -283,7 +285,9 @@ def pipeline_flow(config_path: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Qwen3-VL orchestration pipeline")
     parser.add_argument(
-        "--config", required=True, help="Path to pipeline YAML config"
+        "--config",
+        default="configs/run.yaml",
+        help="Path to pipeline YAML config (default: configs/run.yaml)",
     )
     args = parser.parse_args()
     pipeline_flow(args.config)

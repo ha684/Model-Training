@@ -63,3 +63,8 @@ crawl/
 runs/
 *.db
 .prefect/
+
+# Docker
+*.tar.gz
+docker-compose.override.yml
+# prefect.yaml - DON'T ignore, needed for deployment

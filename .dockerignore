@@ -1,0 +1,58 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+.venv
+venv
+ENV
+env
+
+# IDEs
+.vscode
+.idea
+*.swp
+*.swo
+
+# Data & outputs (sẽ mount volume)
+data/*
+outputs/*
+runs/*
+*.arrow
+hf_dataset
+merged_dataset
+
+# Logs
+*.log
+mlflow.db
+mlartifacts/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Prefect
+.prefect/
+
+# Environment (mount at runtime thay vì copy)
+.env
+
+# Large files
+*.png
+*.jpg
+*.jpeg
+*.pdf
+crawl/
+
+# Documentation
+README.md
+INSTRUCTION.md
+quickstart.sh
+quickstart.ps1
+.env.example

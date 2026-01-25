@@ -1,0 +1,19 @@
+# Prefect deployment configuration
+name: qwen3-vl-pipeline
+version: null
+pull: []
+push: []
+
+deployments:
+  - name: local
+    version: null
+    tags: []
+    description: "Qwen3-VL SFT → GRPO pipeline with auto-gating"
+    entrypoint: pipeline.py:pipeline_flow
+    parameters:
+      config_path: "configs/run.yaml"
+    work_pool:
+      name: default
+      work_queue_name: default
+      job_variables: {}
+    schedules: []

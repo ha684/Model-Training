@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  # Pipeline runner
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qwen3-vl-pipeline:latest
+    container_name: qwen3_pipeline
+    runtime: nvidia  # Cần NVIDIA Container Toolkit
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0,1,2,3
+      # Load env vars từ .env file
+    env_file:
+      - .env
+    volumes:
+      # Mount data & outputs để persist
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - ./runs:/app/runs
+      - ./reports:/app/reports
+      # Mount config nếu muốn chỉnh sửa ngoài
+      - ./configs:/app/configs
+      # Mount .env để update secrets
+      - ./.env:/app/.env:ro
+    working_dir: /app
+    command: python pipeline.py
+    # Nếu muốn interactive shell
+    # command: /bin/bash
+    # stdin_open: true
+    # tty: true
+    networks:
+      - qwen_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Prefect server (optional - chỉ cần nếu muốn UI)
+  prefect-server:
+    image: prefecthq/prefect:2-python3.11
+    container_name: prefect_server
+    ports:
+      - "4200:4200"
+    environment:
+      - PREFECT_SERVER_API_HOST=0.0.0.0
+      - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://prefect:prefect@postgres:5432/prefect
+    volumes:
+      - prefect-data:/root/.prefect
+    networks:
+      - qwen_network
+    depends_on:
+      - postgres
+    command: prefect server start --host 0.0.0.0
+
+  # Prefect worker (optional)
+  prefect-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: qwen3-vl-pipeline:latest
+    container_name: prefect_worker
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PREFECT_API_URL=http://prefect-server:4200/api
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+      - ./runs:/app/runs
+      - ./configs:/app/configs
+      - ./.env:/app/.env:ro
+    networks:
+      - qwen_network
+    depends_on:
+      - prefect-server
+    command: prefect worker start --pool default --type process
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # PostgreSQL for Prefect server (optional)
+  postgres:
+    image: postgres:15-alpine
+    container_name: prefect_postgres
+    environment:
+      - POSTGRES_USER=prefect
+      - POSTGRES_PASSWORD=prefect
+      - POSTGRES_DB=prefect
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - qwen_network
+
+networks:
+  qwen_network:
+    driver: bridge
+
+volumes:
+  prefect-data:
+  postgres-data:

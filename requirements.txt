@@ -10,3 +10,4 @@ dagshub
 jiwer
 prefect
 pyyaml
+python-dotenv
