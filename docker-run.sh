@@ -7,28 +7,50 @@ ACTION=${1:-run}
 
 case $ACTION in
     run)
-        echo "🚀 Running pipeline..."
-        docker-compose up pipeline
+        echo "🚀 Running pipeline (SIMPLE MODE - no retry/resume)..."
+        echo "⚠️  This mode runs 'python pipeline.py' directly"
+        echo "   Fail = restart từ đầu. Use 'run-production' for retry/resume."
+        echo ""
+        docker-compose --profile simple up pipeline-simple
         ;;
     
-    run-with-ui)
-        echo "🚀 Starting Prefect server + worker..."
+    run-production)
+        echo "🚀 Starting Production Mode (with retry/resume)..."
+        echo ""
+        echo "Step 1: Starting Prefect server..."
         docker-compose up -d prefect-server postgres
-        echo "⏳ Waiting for Prefect server..."
+        
+        echo "⏳ Waiting for server to be ready..."
         sleep 15
         
-        echo "📦 Deploying pipeline..."
-        docker exec prefect_server prefect work-pool create --type process default 2>/dev/null || true
-        docker-compose run --rm pipeline prefect deploy --all
+        echo ""
+        echo "Step 2: Creating work pool..."
+        docker exec prefect_server prefect work-pool create --type process default 2>/dev/null || echo "   Work pool already exists"
         
-        echo "🏃 Starting worker..."
+        echo ""
+        echo "Step 3: Deploying pipeline..."
+        docker-compose run --rm \
+          -e PREFECT_API_URL=http://prefect-server:4200/api \
+          prefect-worker prefect deploy --all
+        
+        echo ""
+        echo "Step 4: Starting worker..."
         docker-compose up -d prefect-worker
         
         echo ""
-        echo "✅ Setup complete!"
-        echo "   Prefect UI: http://localhost:4200"
-        echo "   Trigger run: prefect deployment run qwen3_vl_pipeline/local"
-        echo "   Or use UI → Deployments → Run button"
+        echo "=========================================="
+        echo "✅ Production setup complete!"
+        echo "=========================================="
+        echo ""
+        echo "Trigger run:"
+        echo "  CLI: prefect deployment run qwen3_vl_pipeline/local"
+        echo "  UI: http://localhost:4200 → Deployments → Run button"
+        echo ""
+        echo "Monitor:"
+        echo "  docker-compose logs -f prefect-worker"
+        echo ""
+        echo "Retry failed tasks:"
+        echo "  UI → Flow Runs → Click failed run → Retry button"
         ;;
     
     shell)
@@ -81,18 +103,22 @@ case $ACTION in
         ;;
     
     *)
-        echo "Usage: $0 {run|run-with-ui|shell|logs|stop|clean|build|save|load}"
+        echo "Usage: $0 {run|run-production|shell|logs|stop|clean|build|save|load}"
         echo ""
         echo "Commands:"
-        echo "  run          - Run pipeline (ephemeral mode)"
-        echo "  run-with-ui  - Run with Prefect UI"
-        echo "  shell        - Open interactive shell"
-        echo "  logs         - Show logs"
-        echo "  stop         - Stop all services"
-        echo "  clean        - Clean up containers and volumes"
-        echo "  build [ver]  - Build Docker image"
-        echo "  save [ver]   - Save image to .tar.gz"
-        echo "  load <file>  - Load image from .tar.gz"
+        echo "  run               - Run pipeline (SIMPLE mode - no retry/resume)"
+        echo "  run-production    - Run with Prefect deployment (HAS retry/resume)"
+        echo "  shell             - Open interactive shell"
+        echo "  logs              - Show logs"
+        echo "  stop              - Stop all services"
+        echo "  clean             - Clean up containers and volumes"
+        echo "  build [ver]       - Build Docker image"
+        echo "  save [ver]        - Save image to .tar.gz"
+        echo "  load <file>       - Load image from .tar.gz"
+        echo ""
+        echo "Recommendations:"
+        echo "  Testing:    ./docker-run.sh run"
+        echo "  Production: ./docker-run.sh run-production"
         exit 1
         ;;
 esac

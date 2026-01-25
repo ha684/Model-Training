@@ -1,36 +1,29 @@
 version: '3.8'
 
 services:
-  # Pipeline runner
-  pipeline:
+  # Pipeline runner (simple mode - không có retry/resume)
+  # Chỉ dùng mode này cho testing nhanh
+  pipeline-simple:
     build:
       context: .
       dockerfile: Dockerfile
     image: qwen3-vl-pipeline:latest
-    container_name: qwen3_pipeline
+    container_name: qwen3_pipeline_simple
     runtime: nvidia  # Cần NVIDIA Container Toolkit
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=0,1,2,3
-      # Load env vars từ .env file
     env_file:
       - .env
     volumes:
-      # Mount data & outputs để persist
       - ./data:/app/data
       - ./outputs:/app/outputs
       - ./runs:/app/runs
       - ./reports:/app/reports
-      # Mount config nếu muốn chỉnh sửa ngoài
       - ./configs:/app/configs
-      # Mount .env để update secrets
       - ./.env:/app/.env:ro
     working_dir: /app
     command: python pipeline.py
-    # Nếu muốn interactive shell
-    # command: /bin/bash
-    # stdin_open: true
-    # tty: true
     networks:
       - qwen_network
     deploy:
@@ -40,6 +33,8 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    profiles:
+      - simple  # Chỉ start khi dùng: docker-compose --profile simple up
 
   # Prefect server (optional - chỉ cần nếu muốn UI)
   prefect-server:
@@ -58,7 +53,8 @@ services:
       - postgres
     command: prefect server start --host 0.0.0.0
 
-  # Prefect worker (optional)
+  # Prefect worker (PRODUCTION MODE - có retry/resume)
+  # Mode này chạy deployment qua worker
   prefect-worker:
     build:
       context: .
@@ -68,6 +64,7 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0,1,2,3
       - PREFECT_API_URL=http://prefect-server:4200/api
     env_file:
       - .env
@@ -75,8 +72,10 @@ services:
       - ./data:/app/data
       - ./outputs:/app/outputs
       - ./runs:/app/runs
+      - ./reports:/app/reports
       - ./configs:/app/configs
       - ./.env:/app/.env:ro
+    working_dir: /app
     networks:
       - qwen_network
     depends_on:

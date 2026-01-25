@@ -70,10 +70,13 @@ cat > reports/grpo_prod.json << EOF
 EOF
 
 # 4. Run pipeline
+
+# Option A: Simple mode (testing - không có retry/resume)
 ./docker-run.sh run
 
-# hoặc với Prefect UI
-./docker-run.sh run-with-ui
+# Option B: Production mode (có retry/resume)
+./docker-run.sh run-production
+# Sau đó trigger từ UI: http://localhost:4200
 ```
 
 ## 🔧 Config trong Docker
@@ -111,8 +114,20 @@ docker-compose restart pipeline
 
 ### Run pipeline
 
+**Simple mode (testing - không retry/resume):**
 ```bash
 ./docker-run.sh run
+# Chạy python pipeline.py trong container
+# Fail → restart từ đầu
+```
+
+**Production mode (có retry/resume):**
+```bash
+./docker-run.sh run-production
+# Setup server + worker + deployment
+# Trigger: prefect deployment run qwen3_vl_pipeline/local
+# hoặc UI: http://localhost:4200
+# Fail → retry từ UI, không restart từ đầu
 ```
 
 ### View logs

@@ -112,16 +112,18 @@ UI → Flow Runs → Click failed run → **Retry** button
 
 ---
 
-## 3️⃣ Docker Deployment
+## 3️⃣ Docker (Deploy máy khác)
 
 ### Tại máy Dev
 
 ```bash
 # Build image
 ./docker-run.sh build v1.0
-# Windows: .\docker-run.ps1 build v1.0
 
-# Save để chuyển sang máy khác
+# Test local
+./docker-run.sh run  # Simple mode
+
+# Save để transfer
 ./docker-run.sh save v1.0
 # → qwen3-vl-pipeline-v1.0.tar.gz
 ```
@@ -129,7 +131,6 @@ UI → Flow Runs → Click failed run → **Retry** button
 ### Transfer
 
 ```bash
-# USB, SCP, hoặc share drive
 scp qwen3-vl-pipeline-v1.0.tar.gz user@prod:/tmp/
 ```
 
@@ -155,9 +156,20 @@ cat > reports/grpo_prod.json << 'EOF'
 {"winrate": 0.6, "accuracy": 0.6, "p95_latency_ms": 1200, "format_pass_rate": 0.98, "model_repo": "baseline", "model_revision": "baseline", "run_id": "baseline", "stage": "grpo", "timestamp": "2026-01-01T00:00:00Z"}
 EOF
 
-# Run pipeline
+# Run pipeline (chọn 1 trong 2)
+
+# Option A: Simple (testing - không retry)
 ./docker-run.sh run
+
+# Option B: Production (có retry/resume) ⭐
+./docker-run.sh run-production
+# Trigger: prefect deployment run qwen3_vl_pipeline/local
+# UI: http://localhost:4200
 ```
+
+**⚠️ Docker Mode:**
+- `run` = `python pipeline.py` trong container → **KHÔNG có retry/resume!**
+- `run-production` = deployment + worker → **CÓ retry/resume!**
 
 **Done!** 🎉
 

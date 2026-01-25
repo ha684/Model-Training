@@ -3,10 +3,13 @@
 End-to-end orchestration: SFT → eval → gate → GRPO → eval → gate → promote
 
 **📚 Guides:**
-- **QUICKSTART.md** - Quick reference
-- **DEPLOYMENT_EXAMPLE.md** - Tại sao cần deployment? (Real cost savings example)
-- **PREFECT_MODES.md** - 3 modes explained
-- **DOCKER_GUIDE.md** - Docker deployment
+- **QUICKSTART.md** - Quick reference cho tất cả modes
+- **ARCHITECTURE.md** - Visual diagrams: 3 modes khác nhau
+- **DEPLOYMENT_EXAMPLE.md** - Real scenario: save 5+ hours & money
+- **PREFECT_MODES.md** - Deep dive: ephemeral vs server vs deployment
+- **DOCKER_MODES.md** - Docker simple vs production mode
+- **DOCKER_GUIDE.md** - Docker deployment chi tiết
+- **CHEATSHEET.md** - Command reference
 
 ---
 
@@ -83,15 +86,13 @@ GOOGLE_CHAT_WEBHOOK_URL=https://chat.googleapis.com/v1/spaces/xxx/messages?key=x
 EOF
 
 # 3. Run pipeline
-docker-compose up pipeline
 
-# Hoặc chạy trực tiếp
-docker run --rm \
-  --gpus all \
-  --env-file .env \
-  -v $(pwd)/outputs:/app/outputs \
-  -v $(pwd)/runs:/app/runs \
-  qwen3-vl-pipeline:latest
+# Option A: Simple mode (không có retry/resume)
+docker-compose --profile simple up pipeline-simple
+
+# Option B: Production mode (có retry/resume)
+./docker-run.sh run-production
+# Sau đó trigger từ UI: http://localhost:4200
 ```
 
 ---
@@ -306,22 +307,31 @@ prefect deployment set-schedule qwen3_vl_pipeline/local \
 
 ### Docker với Deployment
 
-**docker-compose.yml** đã include:
+**docker-compose.yml** có 2 modes:
+
+#### Mode 1: Simple (Testing)
+```bash
+./docker-run.sh run
+# = docker-compose --profile simple up pipeline-simple
+# Chạy: python pipeline.py
+# ❌ Không có retry/resume
+```
+
+#### Mode 2: Production (Deployment)
+```bash
+./docker-run.sh run-production
+# Setup: server + postgres + deploy + worker
+# ✅ Có retry/resume từ UI
+# Trigger: prefect deployment run qwen3_vl_pipeline/local
+```
+
+**Services:**
+- `pipeline-simple`: Chạy trực tiếp python (no retry)
 - `prefect-server`: UI server
-- `prefect-worker`: Worker để execute jobs
+- `prefect-worker`: Execute jobs qua deployment (có retry)
 - `postgres`: Database cho server
 
-**Run:**
-```bash
-# Start server + worker
-docker-compose up -d prefect-server postgres prefect-worker
-
-# Deploy (trong container)
-docker exec prefect_worker prefect deploy --all
-
-# Trigger từ UI hoặc CLI
-prefect deployment run qwen3_vl_pipeline/local
-```
+**⚠️ Để có retry/resume trong Docker, PHẢI dùng `run-production`!**
 
 ---
 
