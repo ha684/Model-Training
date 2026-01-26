@@ -6,6 +6,8 @@ CLI wrapper for evaluation to avoid manual edits.
 
 from __future__ import annotations
 
+print("Evaluation CLI starting...", flush=True)
+
 import argparse
 import json
 import os
@@ -13,9 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
 
+print("Loading datasets library...", flush=True)
 from datasets import load_dataset
 
+print("Loading evaluation module...", flush=True)
 from qwen3_vl import evaluation
+
+print("Imports complete!", flush=True)
 
 
 def load_eval_dataset(dataset_path: str, dataset_split: str):
@@ -61,6 +67,10 @@ def build_report(
 
 
 def main() -> None:
+    print("\n" + "=" * 70, flush=True)
+    print("EVALUATION CLI - Starting", flush=True)
+    print("=" * 70, flush=True)
+    
     parser = argparse.ArgumentParser(description="Evaluation CLI wrapper")
     parser.add_argument("--base_url", required=True, help="vLLM base URL")
     parser.add_argument("--model", required=True, help="Model name for requests")
@@ -75,20 +85,37 @@ def main() -> None:
     parser.add_argument("--stage", default=os.getenv("RUN_STAGE", ""))
     args = parser.parse_args()
 
-    dataset = load_eval_dataset(args.dataset, args.dataset_split)
+    print("\nConfiguration:", flush=True)
+    print(f"  Base URL: {args.base_url}", flush=True)
+    print(f"  Model: {args.model}", flush=True)
+    print(f"  Dataset: {args.dataset}", flush=True)
+    print(f"  Output: {args.out}", flush=True)
+    if args.max_samples:
+        print(f"  Max samples: {args.max_samples}", flush=True)
+    if args.concurrency:
+        print(f"  Concurrency: {args.concurrency}", flush=True)
+    print(flush=True)
 
+    print(f"Loading dataset from {args.dataset}...", flush=True)
+    dataset = load_eval_dataset(args.dataset, args.dataset_split)
+    print(f"Dataset loaded: {len(dataset)} examples", flush=True)
+
+    print("Configuring evaluation runtime...", flush=True)
     evaluation.configure_runtime(
         base_url_override=args.base_url,
         model_name_override=args.model,
         max_concurrent_requests=args.concurrency,
     )
 
+    print("\nStarting evaluation...", flush=True)
     output = evaluation.run_evaluation(
         dataset=dataset,
         max_samples=args.max_samples,
         max_concurrent_requests=args.concurrency,
     )
+    print("\nEvaluation complete!", flush=True)
 
+    print("Building report...", flush=True)
     report = build_report(
         output["summary"],
         model_repo=args.model_repo or args.model,
@@ -97,12 +124,23 @@ def main() -> None:
         stage=args.stage,
     )
 
+    print(f"Saving results to {args.out}...", flush=True)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    # Also save full summary with detailed metrics
+    full_summary_path = out_path.parent / f"{out_path.stem}_full_summary.json"
+    full_report = {**report, "full_summary": output["summary"]}
+    with full_summary_path.open("w", encoding="utf-8") as f:
+        json.dump(full_report, f, ensure_ascii=False, indent=2)
+    print(f"Full summary saved to {full_summary_path}", flush=True)
+
+    print("\n" + "=" * 70, flush=True)
+    print("EVALUATION COMPLETE - Results:", flush=True)
+    print("=" * 70, flush=True)
+    print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
 
 
 if __name__ == "__main__":

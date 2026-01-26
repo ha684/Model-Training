@@ -145,14 +145,15 @@ async def call_vllm_api_async(
     except Exception as e:
         if retry_count < MAX_RETRIES:
             print(
-                f"API call failed (attempt {retry_count + 1}/{MAX_RETRIES}): {e}. Retrying in {RETRY_DELAY}s..."
+                f"API call failed (attempt {retry_count + 1}/{MAX_RETRIES}): {e}. Retrying in {RETRY_DELAY}s...",
+                flush=True,
             )
             await asyncio.sleep(RETRY_DELAY)
             return await call_vllm_api_async(
                 session, image, system_prompt, user_prompt, retry_count + 1
             )
         else:
-            print(f"API call failed after {MAX_RETRIES} retries: {e}")
+            print(f"API call failed after {MAX_RETRIES} retries: {e}", flush=True)
             return None
 
 
@@ -196,8 +197,8 @@ def parse_model_output(output: str) -> Dict:
 
         return json.loads(cleaned)
     except json.JSONDecodeError as e:
-        print(f"JSON parse error: {e}")
-        print(f"Output: {output}...")
+        print(f"JSON parse error: {e}", flush=True)
+        print(f"Output: {output}...", flush=True)
         return None
 
 
@@ -462,7 +463,7 @@ async def evaluate_single_async(
     try:
         gt_data = json.loads(ground_truth)
     except Exception as e:
-        print(f"Failed to parse ground truth: {e}")
+        print(f"Failed to parse ground truth: {e}", flush=True)
         return None
 
     language = detect_language(gt_data)
@@ -479,7 +480,8 @@ async def evaluate_single_async(
         if model_output is None:
             if retry_count < MAX_RETRIES:
                 print(
-                    f"Evaluation failed (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}. Retrying..."
+                    f"Evaluation failed (attempt {retry_count + 1}/{MAX_RETRIES}) for {source_file}. Retrying...",
+                    flush=True,
                 )
                 await asyncio.sleep(RETRY_DELAY)
                 return await evaluate_single_async(
@@ -660,6 +662,32 @@ async def process_batch(
     return valid_results
 
 
+async def warmup_model(session: aiohttp.ClientSession) -> None:
+    """Send a warmup request to ensure model is loaded and ready."""
+    print("Sending warmup request to model...", flush=True)
+    try:
+        warmup_data = {
+            "model": MODEL_NAME,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Hello"},
+                    ],
+                }
+            ],
+            "temperature": 0.0,
+            "max_tokens": 10,
+        }
+        async with session.post(VLLM_API_URL, json=warmup_data, timeout=30) as resp:
+            if resp.status == 200:
+                print("Warmup successful, model is ready!", flush=True)
+            else:
+                print(f"Warmup returned status {resp.status}, continuing anyway...", flush=True)
+    except Exception as e:
+        print(f"Warmup request failed ({e}), continuing anyway...", flush=True)
+
+
 async def evaluate_dataset_async(dataset):
     """Evaluate entire dataset with concurrent requests."""
     total_examples = len(dataset)
@@ -670,13 +698,23 @@ async def evaluate_dataset_async(dataset):
     )
     timeout = aiohttp.ClientTimeout(total=TIMEOUT)
 
-    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        pbar = atqdm(total=total_examples, desc="Evaluating")
+    print(f"Starting evaluation with {MAX_CONCURRENT_REQUESTS} concurrent requests...", flush=True)
+    print(f"Total examples: {total_examples}, Batch size: {MAX_CONCURRENT_REQUESTS}", flush=True)
 
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        # Warmup the model first
+        await warmup_model(session)
+        pbar = atqdm(total=total_examples, desc="Evaluating", file=sys.stdout, mininterval=0.5)
+
+        batch_num = 0
         for i in range(0, total_examples, MAX_CONCURRENT_REQUESTS):
+            batch_num += 1
             batch_slice = dataset[i : i + MAX_CONCURRENT_REQUESTS]
             batch = []
             batch_size = min(MAX_CONCURRENT_REQUESTS, total_examples - i)
+            
+            print(f"\nProcessing batch {batch_num} ({i}/{total_examples})...", flush=True)
+            
             for j in range(batch_size):
                 example = {
                     "image": batch_slice["image"][j],
@@ -692,6 +730,7 @@ async def evaluate_dataset_async(dataset):
 
             batch_results = await process_batch(session, batch, pbar)
             all_results.extend(batch_results)
+            print(f"Batch {batch_num} completed.", flush=True)
 
         pbar.close()
 
@@ -973,7 +1012,7 @@ def run_evaluation(
     if max_concurrent_requests is not None:
         configure_runtime(max_concurrent_requests=max_concurrent_requests)
 
-    print("\nStarting evaluation...")
+    print("\nStarting evaluation...", flush=True)
     results = asyncio.run(evaluate_dataset_async(dataset))
     summary, simplified_results = summarize_results(results, len(dataset))
     return {"summary": summary, "errors": simplified_results}

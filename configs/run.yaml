@@ -88,6 +88,7 @@ serve:
 eval:
   dataset_path: "ha684/vl-vi-en-ja-conv-mix-v1.3"
   # max_samples: 100
+  # concurrency: 10  # Number of concurrent eval requests (default: 50, lower = less load on vLLM)
 
 gate:
   sft:

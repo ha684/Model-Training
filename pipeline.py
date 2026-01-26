@@ -17,6 +17,7 @@ from pipeline.tasks import (
     evaluate_grpo_gate,
     evaluate_sft_gate,
     load_config,
+    pause_between_tasks,
     promote_alias_pointer,
     resolve_run_context,
     run_command,
@@ -34,6 +35,8 @@ def _build_eval_paths(run_dir: Path) -> Dict[str, str]:
     return {
         "sft": str(run_dir / "sft_eval_report.json"),
         "grpo": str(run_dir / "grpo_eval_report.json"),
+        "sft_full": str(run_dir / "sft_eval_report_full_summary.json"),
+        "grpo_full": str(run_dir / "grpo_eval_report_full_summary.json"),
     }
 
 
@@ -45,29 +48,134 @@ def _make_env(token_env: str, token_value: str) -> Dict[str, str]:
     return env
 
 
-def _summarize_slack(decision: Dict[str, Any], run_id: str) -> str:
-    lines = [f"Run `{run_id}` summary:"]
+def _load_eval_report(report_path: str) -> Dict[str, Any]:
+    """Load full evaluation report including detailed metrics."""
+    import json
+    with open(report_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _format_report_summary(report: Dict[str, Any], stage_name: str, passed: bool) -> str:
+    """Format detailed evaluation metrics for notification."""
+    lines = [f"\n--- {stage_name.upper()}: {'✓ PASS' if passed else '✗ FAIL'} ---"]
+    
+    # Check if we have full_summary
+    full_summary = report.get("full_summary", {})
+    
+    if full_summary:
+        # Display detailed metrics from full summary
+        total = full_summary.get("total_examples", 0)
+        evaluated = full_summary.get("evaluated_examples", 0)
+        successful = full_summary.get("successful_parses", 0)
+        
+        lines.append(f"Examples: {evaluated}/{total} evaluated")
+        lines.append(f"Successful Parses: {successful}/{evaluated} ({successful/evaluated*100:.1f}%)" if evaluated > 0 else "Successful Parses: 0/0")
+        
+        # Overall metadata accuracy
+        overall_meta = full_summary.get("overall_metadata_accuracy")
+        if overall_meta is not None:
+            lines.append(f"Overall Metadata Accuracy: {overall_meta:.1f}%")
+        
+        # Table rows accuracy
+        table_acc = full_summary.get("table_rows_accuracy", 0)
+        lines.append(f"Table Rows Accuracy: {table_acc:.1f}%")
+        
+        # Table structure detection
+        structure_acc = full_summary.get("table_structure_accuracy", 0)
+        if structure_acc > 0:
+            lines.append(f"Table Structure Detection: {structure_acc:.1f}%")
+        
+        # Per-language breakdown
+        lang_breakdown = full_summary.get("language_breakdown", {})
+        if lang_breakdown:
+            lines.append("\nPer-Language Results:")
+            for lang in sorted(lang_breakdown.keys()):
+                stats = lang_breakdown[lang]
+                lang_total = stats.get("total", 0)
+                lang_successful = stats.get("successful", 0)
+                lang_meta_acc = stats.get("metadata_accuracy", {})
+                lang_rows_acc = stats.get("table_rows_accuracy", 0)
+                
+                if lang_total > 0:
+                    success_pct = lang_successful / lang_total * 100
+                    overall_meta_lang = sum(lang_meta_acc.values()) / len(lang_meta_acc) if lang_meta_acc else 0
+                    lines.append(
+                        f"  • {lang.upper()}: {lang_successful}/{lang_total} ({success_pct:.1f}%) "
+                        f"| Meta: {overall_meta_lang:.1f}% | Rows: {lang_rows_acc:.1f}%"
+                    )
+    else:
+        # Fallback to basic metrics
+        winrate = report.get("winrate", 0)
+        accuracy = report.get("accuracy", winrate)
+        lines.append(f"Overall Accuracy: {accuracy * 100:.1f}%")
+        
+        format_pass_rate = report.get("format_pass_rate", 0)
+        lines.append(f"Format Pass Rate: {format_pass_rate * 100:.1f}%")
+    
+    return "\n".join(lines)
+
+
+def _summarize_slack(decision: Dict[str, Any], run_id: str, eval_paths: Dict[str, str]) -> str:
+    """Generate detailed notification summary with evaluation metrics."""
+    lines = [f"🚀 Run `{run_id}` Summary"]
+    lines.append("=" * 50)
+    
     sft = decision.get("sft")
     if sft:
-        lines.append(
-            f"- SFT: {'PASS' if sft.get('passed') else 'FAIL'} "
-            f"(winrate={sft['metrics'].get('winrate')}, "
-            f"format_pass_rate={sft['metrics'].get('format_pass_rate')}, "
-            f"p95_latency_ms={sft['metrics'].get('p95_latency_ms')})"
-        )
+        try:
+            # Try to load full summary first, fallback to basic report
+            sft_report = None
+            try:
+                sft_report = _load_eval_report(eval_paths.get("sft_full", ""))
+            except Exception:
+                sft_report = _load_eval_report(eval_paths.get("sft", ""))
+            
+            sft_summary = _format_report_summary(sft_report, "SFT", sft.get("passed", False))
+            lines.append(sft_summary)
+            
+            # Add delta info if available
+            if not sft.get("baseline_missing"):
+                delta = sft.get("deltas", {}).get("winrate_delta", 0)
+                lines.append(f"Δ vs Baseline: {delta:+.2%}")
+        except Exception as e:
+            # Fallback to basic metrics
+            lines.append(
+                f"\n--- SFT: {'✓ PASS' if sft.get('passed') else '✗ FAIL'} ---\n"
+                f"Accuracy: {sft['metrics'].get('winrate', 0) * 100:.1f}%\n"
+                f"Format Pass Rate: {sft['metrics'].get('format_pass_rate', 0) * 100:.1f}%"
+            )
+    
     grpo = decision.get("grpo")
     if grpo:
-        lines.append(
-            f"- GRPO: {'PASS' if grpo.get('passed') else 'FAIL'} "
-            f"(winrate={grpo['metrics'].get('winrate')}, "
-            f"format_pass_rate={grpo['metrics'].get('format_pass_rate')}, "
-            f"p95_latency_ms={grpo['metrics'].get('p95_latency_ms')})"
-        )
+        try:
+            # Try to load full summary first, fallback to basic report
+            grpo_report = None
+            try:
+                grpo_report = _load_eval_report(eval_paths.get("grpo_full", ""))
+            except Exception:
+                grpo_report = _load_eval_report(eval_paths.get("grpo", ""))
+            
+            grpo_summary = _format_report_summary(grpo_report, "GRPO", grpo.get("passed", False))
+            lines.append(grpo_summary)
+            
+            # Add delta info
+            deltas = grpo.get("deltas", {})
+            if "grpo_vs_sft_delta" in deltas:
+                lines.append(f"Δ vs SFT: {deltas['grpo_vs_sft_delta']:+.2%}")
+            if "grpo_vs_baseline_delta" in deltas:
+                lines.append(f"Δ vs Baseline: {deltas['grpo_vs_baseline_delta']:+.2%}")
+        except Exception as e:
+            # Fallback to basic metrics
+            lines.append(
+                f"\n--- GRPO: {'✓ PASS' if grpo.get('passed') else '✗ FAIL'} ---\n"
+                f"Accuracy: {grpo['metrics'].get('winrate', 0) * 100:.1f}%\n"
+                f"Format Pass Rate: {grpo['metrics'].get('format_pass_rate', 0) * 100:.1f}%"
+            )
+    
     promoted = decision.get("promotion")
     if promoted:
-        lines.append(
-            f"- Promoted: {promoted.get('repo')} @ {promoted.get('revision')}"
-        )
+        lines.append(f"\n🎉 Promoted: {promoted.get('repo')} @ {promoted.get('revision')[:7]}")
+    
     return "\n".join(lines)
 
 
@@ -139,6 +247,9 @@ def pipeline_flow(config_path: str) -> None:
     )
     sft_revision = wait_hf_model_ready(sft_model_id, hf_token)
 
+    # Pause to allow resources to stabilize after training
+    pause_between_tasks("Allowing resources to stabilize after SFT training", 10)
+
     sft_deploy = deploy_vllm(sft_model_id, serve_cfg, str(run_dir))
     try:
         served_model = wait_for_health(
@@ -163,6 +274,9 @@ def pipeline_flow(config_path: str) -> None:
     finally:
         stop_process(sft_deploy["process"])
 
+    # Pause after stopping vLLM before gate evaluation
+    pause_between_tasks("Allowing cleanup after stopping vLLM", 5)
+
     decision["sft"] = evaluate_sft_gate(
         eval_paths["sft"],
         config["baseline"]["sft_baseline_report"],
@@ -172,7 +286,7 @@ def pipeline_flow(config_path: str) -> None:
 
     if not decision["sft"]["passed"]:
         logger.info("SFT gate failed, stopping pipeline")
-        send_notification(_summarize_slack(decision, run_id), notify_cfg)
+        send_notification(_summarize_slack(decision, run_id, eval_paths), notify_cfg)
         return
 
     train_grpo_cfg = dict(config.get("train_grpo", {}))
@@ -198,6 +312,9 @@ def pipeline_flow(config_path: str) -> None:
     )
     grpo_revision = wait_hf_model_ready(grpo_model_id, hf_token)
 
+    # Pause to allow resources to stabilize after training
+    pause_between_tasks("Allowing resources to stabilize after GRPO training", 10)
+
     grpo_deploy = deploy_vllm(grpo_model_id, serve_cfg, str(run_dir))
     try:
         served_model = wait_for_health(
@@ -222,6 +339,9 @@ def pipeline_flow(config_path: str) -> None:
     finally:
         stop_process(grpo_deploy["process"])
 
+    # Pause after stopping vLLM before gate evaluation
+    pause_between_tasks("Allowing cleanup after stopping vLLM", 5)
+
     decision["grpo"] = evaluate_grpo_gate(
         eval_paths["grpo"],
         eval_paths["sft"],
@@ -232,7 +352,7 @@ def pipeline_flow(config_path: str) -> None:
 
     if not decision["grpo"]["passed"]:
         logger.info("GRPO gate failed, stopping pipeline")
-        send_notification(_summarize_slack(decision, run_id), notify_cfg)
+        send_notification(_summarize_slack(decision, run_id, eval_paths), notify_cfg)
         return
 
     pointer_path = promote_alias_pointer(
@@ -282,7 +402,7 @@ def pipeline_flow(config_path: str) -> None:
     )
     _write_json(run_dir / "meta.json", meta)
 
-    send_notification(_summarize_slack(decision, run_id), notify_cfg)
+    send_notification(_summarize_slack(decision, run_id, eval_paths), notify_cfg)
 
 
 def main() -> None:

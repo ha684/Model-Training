@@ -199,12 +199,17 @@ def _execute_command(
     logger.info("Running %s", name)
     logger.info(_mask_values(_format_command(cmd), mask_values))
 
+    # Ensure unbuffered output
+    exec_env = os.environ.copy() if env is None else env.copy()
+    exec_env["PYTHONUNBUFFERED"] = "1"
+
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        env=env,
+        bufsize=1,  # Line buffering
+        env=exec_env,
     )
     assert process.stdout is not None
     for line in process.stdout:
@@ -252,6 +257,37 @@ def _tail_file(path: Path, n_lines: int = 200) -> str:
         return "".join(lines[-n_lines:])
     except Exception as e:
         return f"<failed to read log tail: {e}>"
+
+
+def _cleanup_gpu_memory() -> None:
+    """Attempt to clear GPU memory cache."""
+    logger = get_run_logger()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            logger.info("GPU memory cache cleared")
+    except Exception as e:
+        logger.warning("Failed to clear GPU cache: %s", e)
+
+
+def _kill_existing_vllm_processes() -> None:
+    """Kill any existing vLLM processes to free up resources."""
+    logger = get_run_logger()
+    try:
+        result = subprocess.run(
+            ["pkill", "-f", "vllm.entrypoints"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            logger.info("Killed existing vLLM processes")
+            time.sleep(3)  # Wait for processes to fully terminate
+        else:
+            logger.info("No existing vLLM processes found")
+    except Exception as e:
+        logger.warning("Failed to check/kill vLLM processes: %s", e)
     
 def _stream_process_output(
     process: subprocess.Popen, log_path: Path, logger: Optional[Any] = None
@@ -271,6 +307,12 @@ def _stream_process_output(
 @task(persist_result=False)
 def deploy_vllm(repo_id: str, serve_cfg: Dict[str, Any], run_dir: str) -> Dict[str, Any]:
     logger = get_run_logger()
+
+    # Cleanup before deploying
+    logger.info("Preparing to deploy vLLM...")
+    _kill_existing_vllm_processes()
+    _cleanup_gpu_memory()
+    time.sleep(2)  # Give system time to stabilize
 
     host = serve_cfg.get("host", "127.0.0.1")
     port_start, port_end = serve_cfg.get("port_range", [8001, 8099])
@@ -349,31 +391,45 @@ def wait_for_health(base_url: str, health_endpoint: str, timeout_sec: int) -> Op
     deadline = time.time() + timeout_sec
     url = f"{base_url}{health_endpoint}"
     last_error = None
+    attempt = 0
+
+    logger.info("Waiting for vLLM health check at %s (timeout: %ds)", url, timeout_sec)
 
     while time.time() < deadline:
+        attempt += 1
+        remaining = int(deadline - time.time())
+        
         try:
             code, body = _http_get(url, timeout=10)
 
             if health_endpoint.rstrip("/") == "/health":
                 if code == 200:
-                    logger.info("vLLM alive (GET %s -> 200)", url)
+                    logger.info("✓ vLLM alive (GET %s -> 200)", url)
                     return None
                 last_error = f"GET {url} -> HTTP {code} body={body[:200]!r}"
+                logger.info("Health check attempt %d: not ready yet (HTTP %d), retrying in 5s... (%ds remaining)", 
+                           attempt, code, remaining)
 
             else:
                 if code != 200:
                     last_error = f"GET {url} -> HTTP {code} body={body[:200]!r}"
+                    logger.info("Health check attempt %d: not ready yet (HTTP %d), retrying in 5s... (%ds remaining)", 
+                               attempt, code, remaining)
                 else:
                     payload = json.loads(body) if body.strip() else {}
                     data = payload.get("data", [])
                     if data:
                         model_id = data[0].get("id", "")
-                        logger.info("vLLM ready with model id %s", model_id)
+                        logger.info("✓ vLLM ready with model id %s (attempt %d)", model_id, attempt)
                         return model_id
                     last_error = f"No model data yet: {payload}"
+                    logger.info("Health check attempt %d: model not loaded yet, retrying in 5s... (%ds remaining)", 
+                               attempt, remaining)
 
         except Exception as exc:
             last_error = str(exc)
+            logger.info("Health check attempt %d: connection failed (%s), retrying in 5s... (%ds remaining)", 
+                       attempt, str(exc)[:100], remaining)
 
         time.sleep(5)
 
@@ -388,9 +444,23 @@ def stop_process(process: subprocess.Popen) -> None:
     process.terminate()
     try:
         process.wait(timeout=30)
+        logger.info("vLLM process stopped successfully")
     except subprocess.TimeoutExpired:
         logger.warning("vLLM did not stop, killing")
         process.kill()
+    
+    # Extra cleanup after stopping
+    time.sleep(2)
+    _cleanup_gpu_memory()
+
+
+@task
+def pause_between_tasks(reason: str, seconds: int = 5) -> None:
+    """Add a pause between tasks to allow resource cleanup."""
+    logger = get_run_logger()
+    logger.info("Pausing for %ds: %s", seconds, reason)
+    time.sleep(seconds)
+    logger.info("Resuming pipeline")
 
 
 @task(persist_result=True)
@@ -408,11 +478,24 @@ def run_eval(
     concurrency: Optional[int] = None,
     run_dir: Optional[str] = None,
 ) -> None:
+    logger = get_run_logger()
+    logger.info("=" * 60)
+    logger.info("Starting evaluation for stage: %s", stage)
+    logger.info("Base URL: %s", base_url)
+    logger.info("Model: %s", model_name)
+    logger.info("Dataset: %s", dataset_path)
+    if max_samples:
+        logger.info("Max samples: %d", max_samples)
+    if concurrency:
+        logger.info("Concurrency: %d", concurrency)
+    logger.info("=" * 60)
+    
     if script:
         cmd = shlex.split(script)
     else:
         cmd = [
             os.environ.get("PYTHON_EXECUTABLE", "python"),
+            "-u",  # Unbuffered output
             "-m",
             "qwen3_vl.evaluation_cli",
         ]
