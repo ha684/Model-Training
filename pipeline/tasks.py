@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import threading
 import os
 import shlex
 import socket
@@ -9,6 +11,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+import urllib.request
+import urllib.error
 
 import yaml
 from huggingface_hub import HfApi, create_repo
@@ -22,6 +26,13 @@ def _now_utc() -> str:
 def _read_json(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _read_json_optional(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        return _read_json(path)
+    except FileNotFoundError:
+        return None
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -63,13 +74,13 @@ def _select_port(start: int, end: int, host: str) -> int:
     raise RuntimeError(f"No free port found in range {start}-{end}")
 
 
-@task
+@task(persist_result=True)
 def load_config(config_path: str) -> Dict[str, Any]:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
-@task
+@task(persist_result=True)
 def resolve_run_context(config: Dict[str, Any]) -> Dict[str, Any]:
     run_cfg = config.get("run", {})
     timestamp = run_cfg.get("timestamp", "auto")
@@ -203,18 +214,30 @@ def _execute_command(
         raise RuntimeError(f"{name} failed with exit code {return_code}")
 
 
-@task(retries=1, retry_delay_seconds=60)
+def _command_cache_key(task_run_context: Any, parameters: Dict[str, Any]) -> str:
+    payload = {
+        "run_id": parameters.get("run_id"),
+        "name": parameters.get("name"),
+        "cmd": parameters.get("cmd"),
+        "run_dir": parameters.get("run_dir"),
+    }
+    serialized = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+@task(retries=1, retry_delay_seconds=60, persist_result=True, cache_key_fn=_command_cache_key)
 def run_command(
     name: str,
     cmd: List[str],
     run_dir: str,
+    run_id: str,
     env: Optional[Dict[str, str]] = None,
     mask_values: Optional[List[str]] = None,
 ) -> None:
     _execute_command(name, cmd, run_dir, env=env, mask_values=mask_values)
 
 
-@task(retries=20, retry_delay_seconds=30)
+@task(retries=20, retry_delay_seconds=30, persist_result=True)
 def wait_hf_model_ready(repo_id: str, token: Optional[str]) -> str:
     logger = get_run_logger()
     api = HfApi(token=token)
@@ -222,97 +245,141 @@ def wait_hf_model_ready(repo_id: str, token: Optional[str]) -> str:
     info = api.model_info(repo_id)
     return info.sha
 
+def _tail_file(path: Path, n_lines: int = 200) -> str:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+        return "".join(lines[-n_lines:])
+    except Exception as e:
+        return f"<failed to read log tail: {e}>"
+    
+def _stream_process_output(
+    process: subprocess.Popen, log_path: Path, logger: Optional[Any] = None
+) -> None:
+    if logger is None:
+        import logging
 
-@task
-def deploy_vllm(
-    repo_id: str,
-    serve_cfg: Dict[str, Any],
-    run_dir: str,
-) -> Dict[str, Any]:
+        logger = logging.getLogger("prefect")
+    assert process.stdout is not None
+    with log_path.open("a", encoding="utf-8") as log_file:
+        for line in process.stdout:
+            log_file.write(line)
+            log_file.flush()
+            logger.info("vLLM | %s", line.rstrip())
+
+
+@task(persist_result=False)
+def deploy_vllm(repo_id: str, serve_cfg: Dict[str, Any], run_dir: str) -> Dict[str, Any]:
     logger = get_run_logger()
+
     host = serve_cfg.get("host", "127.0.0.1")
     port_start, port_end = serve_cfg.get("port_range", [8001, 8099])
     port = _select_port(int(port_start), int(port_end), host)
     base_url = f"http://{host}:{port}"
+
     log_path = Path(run_dir) / "vllm.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "vllm",
-        "serve",
-        repo_id,
-        "--tensor-parallel-size",
-        str(serve_cfg.get("tensor_parallel_size", 1)),
+        "vllm", "serve", repo_id,
+        "--tensor-parallel-size", str(serve_cfg.get("tensor_parallel_size", 1)),
+        "--pipeline-parallel-size", str(serve_cfg.get("pipeline_parallel_size", 1)),
         "--trust-remote-code",
-        "--max-model-len",
-        str(serve_cfg.get("max_model_len", 8192)),
-        "--gpu-memory-utilization",
-        str(serve_cfg.get("gpu_memory_utilization", 0.9)),
-        "--host",
-        host,
-        "--port",
-        str(port),
+        "--max-model-len", str(serve_cfg.get("max_model_len", 8192)),
+        "--gpu-memory-utilization", str(serve_cfg.get("gpu_memory_utilization", 0.9)),
+        "--host", host,
+        "--port", str(port),
     ]
 
     attention_backend = serve_cfg.get("attention_backend")
     if attention_backend:
         cmd.extend(["--attention-config.backend", attention_backend])
 
-    _append_command_log(Path(run_dir), cmd, [])
-    logger.info("Starting vLLM on %s", base_url)
+    env = os.environ.copy()
+    hf_token = os.getenv(serve_cfg.get("token_env", "HF_TOKEN"), "")
+    if hf_token:
+        env["HF_TOKEN"] = hf_token
+        env.setdefault("HF_TOKEN", hf_token)
 
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_file = log_path.open("w", encoding="utf-8")
+    env["HF_HUB_ENABLE_HF_TRANSFER"] = str(serve_cfg.get("hf_hub_enable_hf_transfer", 0))
+
+    logger.info("Starting vLLM on %s", base_url)
+    cmd_str = ' '.join(shlex.quote(str(arg)) for arg in cmd)
+    logger.info("Command: %s", _mask_values(cmd_str, [hf_token]))
+
+    _append_command_log(Path(run_dir), cmd, [])
+
     process = subprocess.Popen(
         cmd,
-        stdout=log_file,
+        stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=env,
     )
 
-    return {
-        "process": process,
-        "base_url": base_url,
-        "port": port,
-        "log_path": str(log_path),
-    }
+    stream_thread = threading.Thread(
+        target=_stream_process_output, args=(process, log_path, logger), daemon=True
+    )
+    stream_thread.start()
 
+    time.sleep(2)
+    rc = process.poll()
+    if rc is not None:
+        tail = _tail_file(log_path, 200)
+        raise RuntimeError(
+            f"vLLM exited immediately (rc={rc}). Tail of log:\n{tail}"
+        )
 
-def _http_get_json(url: str, timeout: int = 10) -> Dict[str, Any]:
-    import json as _json
-    import urllib.request
+    return {"process": process, "base_url": base_url, "port": port, "log_path": str(log_path)}
 
+def _http_get(url: str, timeout: int = 10) -> Tuple[int, str]:
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        payload = response.read().decode("utf-8")
-        return _json.loads(payload)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return resp.getcode(), body
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        return e.code, body
 
 
-@task
-def wait_for_health(
-    base_url: str,
-    health_endpoint: str,
-    timeout_sec: int,
-) -> str:
+@task(persist_result=True)
+def wait_for_health(base_url: str, health_endpoint: str, timeout_sec: int) -> Optional[str]:
     logger = get_run_logger()
     deadline = time.time() + timeout_sec
     url = f"{base_url}{health_endpoint}"
     last_error = None
+
     while time.time() < deadline:
         try:
-            payload = _http_get_json(url)
-            data = payload.get("data", [])
-            if data:
-                model_id = data[0].get("id", "")
-                logger.info("vLLM ready with model id %s", model_id)
-                return model_id
-            last_error = f"No model data in response: {payload}"
+            code, body = _http_get(url, timeout=10)
+
+            if health_endpoint.rstrip("/") == "/health":
+                if code == 200:
+                    logger.info("vLLM alive (GET %s -> 200)", url)
+                    return None
+                last_error = f"GET {url} -> HTTP {code} body={body[:200]!r}"
+
+            else:
+                if code != 200:
+                    last_error = f"GET {url} -> HTTP {code} body={body[:200]!r}"
+                else:
+                    payload = json.loads(body) if body.strip() else {}
+                    data = payload.get("data", [])
+                    if data:
+                        model_id = data[0].get("id", "")
+                        logger.info("vLLM ready with model id %s", model_id)
+                        return model_id
+                    last_error = f"No model data yet: {payload}"
+
         except Exception as exc:
             last_error = str(exc)
+
         time.sleep(5)
-    raise TimeoutError(f"vLLM health check failed: {last_error}")
 
+    raise TimeoutError(f"vLLM health check failed for {url}: {last_error}")
 
-@task
+@task(persist_result=False)
 def stop_process(process: subprocess.Popen) -> None:
     logger = get_run_logger()
     if process.poll() is not None:
@@ -326,7 +393,7 @@ def stop_process(process: subprocess.Popen) -> None:
         process.kill()
 
 
-@task
+@task(persist_result=True)
 def run_eval(
     base_url: str,
     model_name: str,
@@ -387,14 +454,22 @@ def _evaluate_gate(
     return len(failures) < len(checks), failures
 
 
-@task
+@task(persist_result=True)
 def evaluate_sft_gate(
     sft_report_path: str,
     baseline_report_path: str,
     gate_cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
     sft_report = _read_json(Path(sft_report_path))
-    baseline = _read_json(Path(baseline_report_path))
+    baseline = _read_json_optional(Path(baseline_report_path))
+    baseline_missing = baseline is None
+    if baseline_missing:
+        logger = get_run_logger()
+        logger.warning(
+            "Baseline report not found at %s; using current SFT as baseline",
+            baseline_report_path,
+        )
+        baseline = sft_report
 
     winrate_delta = sft_report["winrate"] - baseline["winrate"]
     min_winrate = gate_cfg.get("min_winrate_delta_vs_sft_baseline", 0)
@@ -424,6 +499,7 @@ def evaluate_sft_gate(
         "passed": passed,
         "failures": failures,
         "deltas": {"winrate_delta": winrate_delta},
+        "baseline_missing": baseline_missing,
         "thresholds": gate_cfg,
         "metrics": {
             "winrate": sft_report["winrate"],
@@ -433,7 +509,7 @@ def evaluate_sft_gate(
     }
 
 
-@task
+@task(persist_result=True)
 def evaluate_grpo_gate(
     grpo_report_path: str,
     sft_report_path: str,
@@ -493,7 +569,7 @@ def evaluate_grpo_gate(
     }
 
 
-@task
+@task(persist_result=True)
 def promote_alias_pointer(
     alias_repo: str,
     target_repo: str,
@@ -582,7 +658,7 @@ def _send_slack(message: str, webhook_url: str) -> None:
         return
 
 
-@task
+@task(persist_result=True)
 def send_notification(message: str, notify_cfg: Dict[str, Any]) -> None:
     """Send notification via configured backend (email, google_chat, slack)."""
     logger = get_run_logger()

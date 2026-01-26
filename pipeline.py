@@ -71,7 +71,7 @@ def _summarize_slack(decision: Dict[str, Any], run_id: str) -> str:
     return "\n".join(lines)
 
 
-@flow(name="qwen3_vl_pipeline")
+@flow(name="qwen3_vl_pipeline", persist_result=True)
 def pipeline_flow(config_path: str) -> None:
     logger = get_run_logger()
     config = load_config(config_path)
@@ -133,6 +133,7 @@ def pipeline_flow(config_path: str) -> None:
         name="train_sft",
         cmd=sft_cmd,
         run_dir=str(run_dir),
+        run_id=run_id,
         env=env,
         mask_values=[hf_token],
     )
@@ -191,6 +192,7 @@ def pipeline_flow(config_path: str) -> None:
         name="train_grpo",
         cmd=grpo_cmd,
         run_dir=str(run_dir),
+        run_id=run_id,
         env=env,
         mask_values=[hf_token],
     )
@@ -255,6 +257,7 @@ def pipeline_flow(config_path: str) -> None:
             name="quantize",
             cmd=quant_cmd,
             run_dir=str(run_dir),
+            run_id=run_id,
             env=env,
             mask_values=[hf_token],
         )
