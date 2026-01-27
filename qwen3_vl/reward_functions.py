@@ -169,27 +169,26 @@ def format_reward_func(completions, **kwargs):
 
 def metadata_reward_func(completions, answer, **kwargs):
     rewards = []
+
+    METADATA_SCALE = 5.0 
     
     VALID_SCHEMA_KEYS = set(ALL_META_KEYS)
 
     for completion, gt_item in zip(completions, answer):
         pred_raw = extract_json_from_text(completion)
         if pred_raw is None:
-            rewards.append(-1.0)
+            rewards.append(-1.0 * METADATA_SCALE * 1.5) 
             continue
 
         gt_raw = gt_item if isinstance(gt_item, dict) else json.loads(gt_item)
         pred_data = normalize_json_structure(pred_raw)
         gt_data = normalize_json_structure(gt_raw)
-
+        
         gt_meta = gt_data["metadata"]
         pred_meta = pred_data["metadata"]
 
-        gt_active_keys = [
-            k for k in ALL_META_KEYS 
-            if normalize_text(gt_meta.get(k)) is not None
-        ]
-
+        gt_active_keys = [k for k in ALL_META_KEYS if normalize_text(gt_meta.get(k)) is not None]
+        
         extra_valid_keys = []
         for k in ALL_META_KEYS:
             gt_val = normalize_text(gt_meta.get(k))
@@ -197,10 +196,7 @@ def metadata_reward_func(completions, answer, **kwargs):
             if gt_val is None and pred_val is not None:
                 extra_valid_keys.append(k)
 
-        ghost_keys = [
-            k for k in pred_meta.keys() 
-            if k not in VALID_SCHEMA_KEYS
-        ]
+        ghost_keys = [k for k in pred_meta.keys() if k not in VALID_SCHEMA_KEYS]
 
         match_score_sum = 0.0
         for k in gt_active_keys:
@@ -215,7 +211,7 @@ def metadata_reward_func(completions, answer, **kwargs):
         else:
             final_score = match_score_sum / denominator
 
-        rewards.append((final_score * 2.0) - 1.0)
+        rewards.append(((final_score * 2.0) - 1.0) * METADATA_SCALE)
 
     return rewards
 
@@ -223,61 +219,82 @@ def metadata_reward_func(completions, answer, **kwargs):
 def table_row_reward_func(completions, answer, **kwargs):
     rewards = []
 
+    BASE_SCALE = 4.0        
+    
+    ROW_MATCH_BONUS = 0.3   
+    
+    ROW_WRONG_PENALTY = 1.0 
+
+    ROW_MISSING_PENALTY = 1.0
+
     for completion, gt_item in zip(completions, answer):
         pred_raw = extract_json_from_text(completion)
         if pred_raw is None:
-            rewards.append(-1.0)
+            rewards.append(-5.0)
             continue
 
         gt_raw = gt_item if isinstance(gt_item, dict) else json.loads(gt_item)
-        
         pred_data = normalize_json_structure(pred_raw)
         gt_data = normalize_json_structure(gt_raw)
 
         gt_rows = gt_data["table_rows"]
         pred_rows = pred_data["table_rows"]
 
-        if not gt_rows:
-            rewards.append(1.0 if not pred_rows else 0.0)
-            continue
-
         gt_map = {}
         for r in gt_rows:
             pc = normalize_text(r.get("product_code"))
             if not pc: continue
             gt_map[pc] = r.get("quantity")
-
-        if not gt_map:
-            rewards.append(0.0)
+        
+        total_gt = len(gt_map)
+        
+        if total_gt == 0:
+            if len(pred_rows) == 0:
+                rewards.append(BASE_SCALE)
+            else:
+                rewards.append(-1.0 * len(pred_rows) * ROW_WRONG_PENALTY)
             continue
 
         matched_count = 0
+        wrong_count = 0
         pred_codes_seen = set()
 
         for r in pred_rows:
             p_code = normalize_text(r.get("product_code"))
             p_qty = r.get("quantity")
             
-            if not p_code or p_code not in gt_map or p_code in pred_codes_seen:
+            if not p_code or p_code in pred_codes_seen:
+                wrong_count += 1
                 continue
-            
             pred_codes_seen.add(p_code)
 
-            g_qty = gt_map[p_code]
-            if g_qty is not None:
-                if not is_float_equal(p_qty, g_qty):
-                    continue
-            
-            matched_count += 1
+            if p_code in gt_map:
+                g_qty = gt_map[p_code]
+                if g_qty is not None and is_float_equal(p_qty, g_qty):
+                    matched_count += 1
+                else:
+                    wrong_count += 1
+            else:
+                wrong_count += 1
 
-        n_gt = len(gt_map)
-        n_pred = len(pred_rows)
+        missing_count = total_gt - matched_count
 
-        if n_gt + n_pred == 0:
-            table_score = 1.0
-        else:
-            table_score = (2 * matched_count) / (n_gt + n_pred)
+        
+        precision = matched_count / len(pred_rows) if len(pred_rows) > 0 else 0
+        recall = matched_count / total_gt if total_gt > 0 else 0
+        f1 = 0
+        if (precision + recall) > 0:
+            f1 = 2 * (precision * recall) / (precision + recall)
 
-        rewards.append((table_score * 2.0) - 1.0)
+        bonus_score = matched_count * ROW_MATCH_BONUS
+        
+        penalty_score = (wrong_count * ROW_WRONG_PENALTY) + (missing_count * ROW_MISSING_PENALTY)
+        
+        # Tổng hợp
+        final_score = (f1 * BASE_SCALE) + bonus_score - penalty_score
+
+        final_score = max(final_score, -10.0)
+        
+        rewards.append(final_score)
 
     return rewards

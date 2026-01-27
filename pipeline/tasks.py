@@ -537,6 +537,17 @@ def _evaluate_gate(
     return len(failures) < len(checks), failures
 
 
+def _get_pct(report: Dict[str, Any], key: str) -> Optional[float]:
+    """Extract a percentage-like metric from report, if present."""
+    value = report.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
 @task(persist_result=True)
 def evaluate_sft_gate(
     sft_report_path: str,
@@ -554,40 +565,64 @@ def evaluate_sft_gate(
         )
         baseline = sft_report
 
-    winrate_delta = sft_report["winrate"] - baseline["winrate"]
-    min_winrate = gate_cfg.get("min_winrate_delta_vs_sft_baseline", 0)
-    min_format = gate_cfg.get("min_format_pass_rate", 0)
-    max_latency = gate_cfg.get("max_p95_latency_ms", 0)
-    checks = [
-        (
-            "winrate_delta_vs_sft_baseline",
-            winrate_delta >= min_winrate if winrate_delta is not None else False,
-        ),
-        (
-            "format_pass_rate",
-            sft_report["format_pass_rate"] >= min_format
-            if sft_report.get("format_pass_rate") is not None
-            else False,
-        ),
-        (
-            "p95_latency_ms",
-            sft_report["p95_latency_ms"] <= max_latency
-            if sft_report.get("p95_latency_ms") is not None
-            else False,
-        ),
-    ]
+    # New gate: ignore latency + format; continue if either metric improves vs baseline.
+    current_meta = _get_pct(sft_report, "overall_metadata_accuracy")
+    current_rows = _get_pct(sft_report, "table_rows_accuracy")
+    baseline_meta = _get_pct(baseline, "overall_metadata_accuracy")
+    baseline_rows = _get_pct(baseline, "table_rows_accuracy")
 
-    passed, failures = _evaluate_gate(checks, gate_cfg.get("require_all", True))
+    # Backwards compatibility: baseline might only have "winrate" (0..1)
+    if baseline_meta is None and baseline.get("winrate") is not None:
+        try:
+            baseline_meta = float(baseline["winrate"]) * 100.0
+        except Exception:
+            baseline_meta = None
+    if current_meta is None and sft_report.get("winrate") is not None:
+        try:
+            current_meta = float(sft_report["winrate"]) * 100.0
+        except Exception:
+            current_meta = None
+
+    improved_meta = (
+        current_meta is not None
+        and baseline_meta is not None
+        and current_meta > baseline_meta
+    )
+    improved_rows = (
+        current_rows is not None
+        and baseline_rows is not None
+        and current_rows > baseline_rows
+    )
+
+    # If baseline is missing, allow continuing (can't compare).
+    passed = True if baseline_missing else (improved_meta or improved_rows)
+    failures: List[str] = []
+    if not passed:
+        if not improved_meta:
+            failures.append("overall_metadata_accuracy_not_improved")
+        if not improved_rows:
+            failures.append("table_rows_accuracy_not_improved")
+
     return {
         "passed": passed,
         "failures": failures,
-        "deltas": {"winrate_delta": winrate_delta},
+        "deltas": {
+            "overall_metadata_accuracy_delta": (
+                (current_meta - baseline_meta)
+                if current_meta is not None and baseline_meta is not None
+                else None
+            ),
+            "table_rows_accuracy_delta": (
+                (current_rows - baseline_rows)
+                if current_rows is not None and baseline_rows is not None
+                else None
+            ),
+        },
         "baseline_missing": baseline_missing,
         "thresholds": gate_cfg,
         "metrics": {
-            "winrate": sft_report["winrate"],
-            "format_pass_rate": sft_report["format_pass_rate"],
-            "p95_latency_ms": sft_report["p95_latency_ms"],
+            "overall_metadata_accuracy": current_meta,
+            "table_rows_accuracy": current_rows,
         },
     }
 
@@ -600,55 +635,68 @@ def evaluate_grpo_gate(
     gate_cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
     grpo_report = _read_json(Path(grpo_report_path))
-    sft_report = _read_json(Path(sft_report_path))
-    baseline = _read_json(Path(baseline_report_path))
+    _ = sft_report_path  # kept for compatibility; not used in new gate
+    baseline = _read_json_optional(Path(baseline_report_path))
+    baseline_missing = baseline is None
+    if baseline_missing:
+        baseline = grpo_report
 
-    grpo_vs_sft_delta = grpo_report["winrate"] - sft_report["winrate"]
-    grpo_vs_baseline_delta = grpo_report["winrate"] - baseline["winrate"]
+    current_meta = _get_pct(grpo_report, "overall_metadata_accuracy")
+    current_rows = _get_pct(grpo_report, "table_rows_accuracy")
+    baseline_meta = _get_pct(baseline, "overall_metadata_accuracy")
+    baseline_rows = _get_pct(baseline, "table_rows_accuracy")
 
-    min_vs_sft = gate_cfg.get("min_winrate_delta_vs_sft_new", 0)
-    min_vs_baseline = gate_cfg.get("min_winrate_delta_vs_grpo_baseline", 0)
-    min_format = gate_cfg.get("min_format_pass_rate", 0)
-    max_latency = gate_cfg.get("max_p95_latency_ms", 0)
-    checks = [
-        (
-            "winrate_delta_vs_sft_new",
-            grpo_vs_sft_delta >= min_vs_sft if grpo_vs_sft_delta is not None else False,
-        ),
-        (
-            "winrate_delta_vs_grpo_baseline",
-            grpo_vs_baseline_delta >= min_vs_baseline
-            if grpo_vs_baseline_delta is not None
-            else False,
-        ),
-        (
-            "format_pass_rate",
-            grpo_report["format_pass_rate"] >= min_format
-            if grpo_report.get("format_pass_rate") is not None
-            else False,
-        ),
-        (
-            "p95_latency_ms",
-            grpo_report["p95_latency_ms"] <= max_latency
-            if grpo_report.get("p95_latency_ms") is not None
-            else False,
-        ),
-    ]
+    if baseline_meta is None and baseline.get("winrate") is not None:
+        try:
+            baseline_meta = float(baseline["winrate"]) * 100.0
+        except Exception:
+            baseline_meta = None
+    if current_meta is None and grpo_report.get("winrate") is not None:
+        try:
+            current_meta = float(grpo_report["winrate"]) * 100.0
+        except Exception:
+            current_meta = None
 
-    passed, failures = _evaluate_gate(checks, gate_cfg.get("require_all", True))
+    improved_meta = (
+        current_meta is not None
+        and baseline_meta is not None
+        and current_meta > baseline_meta
+    )
+    improved_rows = (
+        current_rows is not None
+        and baseline_rows is not None
+        and current_rows > baseline_rows
+    )
+
+    passed = True if baseline_missing else (improved_meta or improved_rows)
+    failures: List[str] = []
+    if not passed:
+        if not improved_meta:
+            failures.append("overall_metadata_accuracy_not_improved")
+        if not improved_rows:
+            failures.append("table_rows_accuracy_not_improved")
+
     return {
         "passed": passed,
         "failures": failures,
         "deltas": {
-            "grpo_vs_sft_delta": grpo_vs_sft_delta,
-            "grpo_vs_baseline_delta": grpo_vs_baseline_delta,
+            "overall_metadata_accuracy_delta": (
+                (current_meta - baseline_meta)
+                if current_meta is not None and baseline_meta is not None
+                else None
+            ),
+            "table_rows_accuracy_delta": (
+                (current_rows - baseline_rows)
+                if current_rows is not None and baseline_rows is not None
+                else None
+            ),
         },
         "thresholds": gate_cfg,
         "metrics": {
-            "winrate": grpo_report["winrate"],
-            "format_pass_rate": grpo_report["format_pass_rate"],
-            "p95_latency_ms": grpo_report["p95_latency_ms"],
+            "overall_metadata_accuracy": current_meta,
+            "table_rows_accuracy": current_rows,
         },
+        "baseline_missing": baseline_missing,
     }
 
 

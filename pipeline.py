@@ -26,6 +26,8 @@ from pipeline.tasks import (
     stop_process,
     wait_for_health,
     wait_hf_model_ready,
+    _kill_existing_vllm_processes,
+    _cleanup_gpu_memory,
 )
 from dotenv import load_dotenv
 
@@ -274,8 +276,7 @@ def pipeline_flow(config_path: str) -> None:
     finally:
         stop_process(sft_deploy["process"])
 
-    # Pause after stopping vLLM before gate evaluation
-    pause_between_tasks("Allowing cleanup after stopping vLLM", 5)
+    pause_between_tasks("Allowing cleanup after stopping vLLM", 15)
 
     decision["sft"] = evaluate_sft_gate(
         eval_paths["sft"],
@@ -311,9 +312,11 @@ def pipeline_flow(config_path: str) -> None:
         mask_values=[hf_token],
     )
     grpo_revision = wait_hf_model_ready(grpo_model_id, hf_token)
-
-    # Pause to allow resources to stabilize after training
-    pause_between_tasks("Allowing resources to stabilize after GRPO training", 10)
+    
+    logger.info("Cleaning up before GRPO deployment...")
+    _kill_existing_vllm_processes()
+    _cleanup_gpu_memory()
+    pause_between_tasks("Allowing resources to stabilize after GRPO training", 15)
 
     grpo_deploy = deploy_vllm(grpo_model_id, serve_cfg, str(run_dir))
     try:

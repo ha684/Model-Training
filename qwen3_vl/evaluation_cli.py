@@ -19,7 +19,24 @@ print("Loading datasets library...", flush=True)
 from datasets import load_dataset
 
 print("Loading evaluation module...", flush=True)
+import sys
+
 from qwen3_vl import evaluation
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+CURRENT_DIR = os.getcwd()
+LOCAL_CACHE_DIR = os.path.join(CURRENT_DIR, "local_hf_cache")
+
+if not os.path.exists(LOCAL_CACHE_DIR):
+    os.makedirs(LOCAL_CACHE_DIR)
+    print(f"📁 Created local cache directory: {LOCAL_CACHE_DIR}")
+
+os.environ["HF_HOME"] = LOCAL_CACHE_DIR
+os.environ["HF_DATASETS_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "datasets")
+os.environ["HF_HUB_CACHE"] = os.path.join(LOCAL_CACHE_DIR, "hub")
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+os.environ["UNSLOTH_STABLE_DOWNLOADS"] = "1"
+os.environ["HF_HUB_DISABLE_XET"] = "1"
 
 print("Imports complete!", flush=True)
 
@@ -36,8 +53,11 @@ def load_eval_dataset(dataset_path: str, dataset_split: str):
         if suffix == ".parquet":
             return load_dataset("parquet", data_files=str(path), split=dataset_split)
         raise ValueError(f"Unsupported dataset format: {suffix}")
-
-    return load_dataset(dataset_path, split=dataset_split)
+    print("Path not exist")
+    return load_dataset(
+        dataset_path, split="test", cache_dir=os.getenv("HF_DATASETS_CACHE"), 
+        data_files={"test": f"hf://datasets/{dataset_path}/data/test-*.parquet"}
+    )
 
 
 def build_report(
@@ -48,12 +68,18 @@ def build_report(
     stage: str,
 ) -> Dict[str, Any]:
     overall_metadata = summary.get("overall_metadata_accuracy")
+    table_rows_accuracy = summary.get("table_rows_accuracy")
+
+    # Backwards-compatible fields used by the pipeline gate historically
     accuracy = overall_metadata / 100.0 if overall_metadata is not None else 0.0
     winrate = accuracy
     p95_latency_ms = summary.get("p95_latency_ms")
     format_pass_rate = summary.get("format_pass_rate", 0.0)
 
     return {
+        # Preferred gate metrics (percent, like in evaluation summary prints)
+        "overall_metadata_accuracy": overall_metadata,
+        "table_rows_accuracy": table_rows_accuracy,
         "winrate": winrate,
         "accuracy": accuracy,
         "p95_latency_ms": p95_latency_ms,
@@ -70,7 +96,7 @@ def main() -> None:
     print("\n" + "=" * 70, flush=True)
     print("EVALUATION CLI - Starting", flush=True)
     print("=" * 70, flush=True)
-    
+
     parser = argparse.ArgumentParser(description="Evaluation CLI wrapper")
     parser.add_argument("--base_url", required=True, help="vLLM base URL")
     parser.add_argument("--model", required=True, help="Model name for requests")
