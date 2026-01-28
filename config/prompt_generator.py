@@ -5,14 +5,12 @@ Dynamic prompt generator that builds prompts based on field definitions.
 Prompts automatically adjust when fields are added/removed.
 """
 
-import random
-from typing import List, Optional
+from typing import List
 
 from .fields_definitions import (
     FIELD_DEFINITIONS,
     FieldDefinition,
     Language,
-    get_field_names,
 )
 
 PROMPT_TEMPLATES = {
@@ -91,18 +89,14 @@ def _generate_json_structure(
     """Generate JSON structure example."""
     parts = []
     
-    # Metadata is always a list[dict], can be empty []
     if metadata_fields:
         metadata_items = ", ".join(
             [f'"{f}": {template["value_placeholder"]}' for f in metadata_fields]
         )
         parts.append(f'  "{template["metadata_label"]}": [\n    {{\n      {metadata_items}\n    }}\n  ]')
     else:
-        # Empty metadata list
         parts.append(f'  "{template["metadata_label"]}": []')
-    
-    # Table rows is always a list[dict], always has product_code at minimum
-    # Can be empty [] if no table in image
+
     table_items = ", ".join(
         [f'"{f}": {template["value_placeholder"]}' for f in table_fields]
     )
@@ -142,33 +136,27 @@ def generate_extraction_prompt(
         >>> prompt_ja = generate_extraction_prompt("ja")
         >>> prompt_vi = generate_extraction_prompt("vi")
     """
-    # Use custom fields or default
     fields = custom_fields if custom_fields is not None else FIELD_DEFINITIONS
 
-    # Get template for language
     template = PROMPT_TEMPLATES[language]
 
-    # Get metadata and table fields
     metadata_fields_defs = [f for f in fields if f.field_type == "metadata"]
     table_fields_defs = [f for f in fields if f.field_type == "table"]
 
     metadata_field_names = [f.get_name(language) for f in metadata_fields_defs]
     table_field_names = [f.get_name(language) for f in table_fields_defs]
 
-    # Find quantity field name for rules
     quantity_field_def = next((f for f in fields if f.key == "quantity"), None)
     quantity_field_name = (
         quantity_field_def.get_name(language) if quantity_field_def else "quantity"
     )
 
-    # Build prompt sections
     sections = []
 
     # Header
     sections.append(template["header"])
     sections.append("")
 
-    # Output requirements
     sections.append(template["output_requirements"])
     sections.append(f"- {template['return_format']}")
     sections.append(
@@ -176,11 +164,9 @@ def generate_extraction_prompt(
     )
     sections.append("")
 
-    # Extraction instructions
     sections.append(template["extraction_instructions"])
     sections.append("")
 
-    # Metadata fields - only add if there are metadata fields
     if metadata_fields_defs:
         sections.append(template["metadata_section"])
         sections.append("")
@@ -189,7 +175,6 @@ def generate_extraction_prompt(
         )
         sections.append("")
 
-    # Table fields - always add (at minimum has product_code)
     sections.append(template["table_section"])
     sections.append("")
     sections.append(
@@ -197,10 +182,8 @@ def generate_extraction_prompt(
     )
     sections.append("")
 
-    # Important rules
     sections.append(template["important_rules"])
     for rule in template["rules"]:
-        # Skip rules that reference quantity if quantity field not in selected fields
         if "{quantity_field}" in rule and not any(f.key == "quantity" for f in fields):
             continue
         # Skip rules that reference table_rows if no table fields
@@ -213,164 +196,3 @@ def generate_extraction_prompt(
         sections.append(f"- {formatted_rule}")
 
     return "\n".join(sections)
-
-
-def get_metadata_fields(language: Language = "en") -> List[str]:
-    """Get list of metadata field names for a language."""
-    return get_field_names(language, field_type="metadata")
-
-
-def get_table_fields(language: Language = "en") -> List[str]:
-    """Get list of table field names for a language."""
-    return get_field_names(language, field_type="table")
-
-
-def get_all_fields(language: Language = "en") -> List[str]:
-    """Get all field names for a language."""
-    return get_field_names(language)
-
-
-# Convenience functions for backward compatibility
-def get_extraction_prompt_en() -> str:
-    """Generate English extraction prompt."""
-    return generate_extraction_prompt("en")
-
-
-def get_extraction_prompt_ja() -> str:
-    """Generate Japanese extraction prompt."""
-    return generate_extraction_prompt("ja")
-
-
-def get_extraction_prompt_vi() -> str:
-    """Generate Vietnamese extraction prompt."""
-    return generate_extraction_prompt("vi")
-
-
-def random_select_fields(
-    num_fields: Optional[int] = None,
-    num_metadata: Optional[int] = None,
-    num_table: Optional[int] = None,
-    seed: Optional[int] = None,
-) -> List[FieldDefinition]:
-    """
-    Randomly select a subset of fields.
-
-    Args:
-        num_fields: Total number of fields to select (if specified, overrides num_metadata and num_table)
-        num_metadata: Number of metadata fields to select
-        num_table: Number of table fields to select
-        seed: Random seed for reproducibility
-
-    Returns:
-        List of randomly selected field definitions
-
-    Examples:
-        # Select random 5 fields total
-        fields = random_select_fields(num_fields=5)
-
-        # Select 3 metadata + 2 table fields
-        fields = random_select_fields(num_metadata=3, num_table=2)
-
-        # With seed for reproducibility
-        fields = random_select_fields(num_fields=4, seed=42)
-    """
-    if seed is not None:
-        random.seed(seed)
-
-    metadata_fields = [f for f in FIELD_DEFINITIONS if f.field_type == "metadata"]
-    table_fields = [f for f in FIELD_DEFINITIONS if f.field_type == "table"]
-
-    if num_fields is not None:
-        # Select random num_fields from all fields
-        all_fields = FIELD_DEFINITIONS.copy()
-        random.shuffle(all_fields)
-        return all_fields[:num_fields]
-
-    # Select specific number from each type
-    selected = []
-
-    if num_metadata is not None:
-        num_metadata = min(num_metadata, len(metadata_fields))
-        selected.extend(random.sample(metadata_fields, num_metadata))
-    else:
-        selected.extend(metadata_fields)
-
-    if num_table is not None:
-        num_table = min(num_table, len(table_fields))
-        selected.extend(random.sample(table_fields, num_table))
-    else:
-        selected.extend(table_fields)
-
-    return selected
-
-
-def random_remove_fields(
-    num_to_remove: int,
-    seed: Optional[int] = None,
-) -> List[FieldDefinition]:
-    """
-    Randomly remove a number of fields from FIELD_DEFINITIONS.
-
-    Args:
-        num_to_remove: Number of fields to remove
-        seed: Random seed for reproducibility
-
-    Returns:
-        Remaining field definitions after removal
-
-    Example:
-        # Remove 4 random fields, keep the rest
-        fields = random_remove_fields(4)
-        prompt = generate_extraction_prompt("en", custom_fields=fields)
-    """
-    if seed is not None:
-        random.seed(seed)
-
-    all_fields = FIELD_DEFINITIONS.copy()
-    num_to_remove = min(num_to_remove, len(all_fields))
-
-    # Randomly select fields to keep
-    num_to_keep = len(all_fields) - num_to_remove
-    return random.sample(all_fields, num_to_keep)
-
-
-def generate_random_prompt(
-    language: Language = "en",
-    num_fields: Optional[int] = None,
-    num_metadata: Optional[int] = None,
-    num_table: Optional[int] = None,
-    seed: Optional[int] = None,
-) -> tuple[str, List[FieldDefinition]]:
-    """
-    Generate prompt with randomly selected fields.
-
-    Args:
-        language: Language code ("en", "ja", or "vi")
-        num_fields: Total number of fields to select
-        num_metadata: Number of metadata fields to select
-        num_table: Number of table fields to select
-        seed: Random seed for reproducibility
-
-    Returns:
-        Tuple of (generated_prompt, selected_fields)
-
-    Examples:
-        # Generate prompt with only 5 random fields
-        prompt, fields = generate_random_prompt("en", num_fields=5)
-
-        # Generate prompt with 2 metadata + 2 table fields
-        prompt, fields = generate_random_prompt("vi", num_metadata=2, num_table=2)
-
-        # With seed for reproducibility
-        prompt, fields = generate_random_prompt("ja", num_fields=4, seed=42)
-    """
-    selected_fields = random_select_fields(
-        num_fields=num_fields,
-        num_metadata=num_metadata,
-        num_table=num_table,
-        seed=seed,
-    )
-
-    prompt = generate_extraction_prompt(language, custom_fields=selected_fields)
-
-    return prompt, selected_fields

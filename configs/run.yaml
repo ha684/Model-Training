@@ -17,7 +17,7 @@ train_sft:
   script: "bash scripts/train_multi_gpu.sh"
   num_gpus: 4
   model_name: "Qwen/Qwen3-VL-2B-Instruct"
-  max_seq_length: 16384
+  max_seq_length: 8192
   dataset_name: "ha684/vl-vi-en-ja-conv-mix-v1.3"
   lora_r: 64
   lora_alpha: 128
@@ -25,8 +25,8 @@ train_sft:
   batch_size: 8
   eval_batch_size: 8
   grad_accum: 1
-  max_steps: 20
-  learning_rate: 5e-5
+  epochs: 1
+  learning_rate: 7e-5
   warmup_steps: 50
   weight_decay: 0.01
   eval_steps: 100
@@ -44,7 +44,7 @@ train_grpo:
   script: "bash scripts/train_grpo.sh"
   num_gpus: 4
   # model_name: ""
-  max_seq_length: 16384
+  max_seq_length: 8192
   dataset_name: "ha684/vl-vi-en-ja-conv-mix-v1.3"
   lora_r: 32
   lora_alpha: 64
@@ -52,13 +52,13 @@ train_grpo:
   eval_batch_size: 8
   grad_accum: 1
   max_steps: 500
-  learning_rate: 2e-6
+  learning_rate: 5e-6
   warmup_steps: 10
   weight_decay: 0.01
   logging_steps: 1
   num_generations: 8
-  max_prompt_length: 16384
-  max_completion_length: 4096
+  max_prompt_length: 8192
+  max_completion_length: 2048
   max_grad_norm: 1
   eval_steps: 100
   adam_beta1: 0.9
@@ -78,7 +78,7 @@ serve:
   hf_hub_enable_hf_transfer: 0
   tensor_parallel_size: 4
   max_model_len: 8192
-  gpu_memory_utilization: 0.9
+  gpu_memory_utilization: 0.5
   attention_backend: "TRITON_ATTN"
   host: "127.0.0.1"
   port_range: [8001, 8099]
@@ -86,22 +86,16 @@ serve:
   startup_timeout_sec: 900
 
 eval:
-  dataset_path: "ha684/vl-vi-en-ja-conv-mix-v1.3"
-  # max_samples: 100
-  # concurrency: 10  # Number of concurrent eval requests (default: 50, lower = less load on vLLM)
+  dataset_path: "ha684/vl-vi-en-ja-conv-mix-v1.4"
+  concurrency: 32
 
 gate:
   sft:
-    min_winrate_delta_vs_sft_baseline: -0.01
-    min_format_pass_rate: 0.98
-    max_p95_latency_ms: 1500
-    require_all: true
+    min_metadata_accuracy: 85.0
+    min_rows_accuracy: 90.0       
   grpo:
-    min_winrate_delta_vs_sft_new: 0.0
-    min_winrate_delta_vs_grpo_baseline: 0.02
-    min_format_pass_rate: 0.98
-    max_p95_latency_ms: 1500
-    require_all: true
+    min_metadata_accuracy: 87.0
+    min_rows_accuracy: 95.0       
 
 notify:
   backend: "google_chat"

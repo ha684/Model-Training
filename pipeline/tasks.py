@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-import json
 import hashlib
-import threading
+import json
 import os
 import shlex
 import socket
 import subprocess
+import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-import urllib.request
-import urllib.error
 
 import yaml
 from huggingface_hub import HfApi, create_repo
@@ -230,7 +230,12 @@ def _command_cache_key(task_run_context: Any, parameters: Dict[str, Any]) -> str
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-@task(retries=1, retry_delay_seconds=60, persist_result=True, cache_key_fn=_command_cache_key)
+@task(
+    retries=1,
+    retry_delay_seconds=60,
+    persist_result=True,
+    cache_key_fn=_command_cache_key,
+)
 def run_command(
     name: str,
     cmd: List[str],
@@ -250,6 +255,7 @@ def wait_hf_model_ready(repo_id: str, token: Optional[str]) -> str:
     info = api.model_info(repo_id)
     return info.sha
 
+
 def _tail_file(path: Path, n_lines: int = 200) -> str:
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -264,6 +270,7 @@ def _cleanup_gpu_memory() -> None:
     logger = get_run_logger()
     try:
         import torch
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
@@ -288,7 +295,8 @@ def _kill_existing_vllm_processes() -> None:
             logger.info("No existing vLLM processes found")
     except Exception as e:
         logger.warning("Failed to check/kill vLLM processes: %s", e)
-    
+
+
 def _stream_process_output(
     process: subprocess.Popen, log_path: Path, logger: Optional[Any] = None
 ) -> None:
@@ -305,14 +313,15 @@ def _stream_process_output(
 
 
 @task(persist_result=False)
-def deploy_vllm(repo_id: str, serve_cfg: Dict[str, Any], run_dir: str) -> Dict[str, Any]:
+def deploy_vllm(
+    repo_id: str, serve_cfg: Dict[str, Any], run_dir: str
+) -> Dict[str, Any]:
     logger = get_run_logger()
 
-    # Cleanup before deploying
     logger.info("Preparing to deploy vLLM...")
     _kill_existing_vllm_processes()
     _cleanup_gpu_memory()
-    time.sleep(2)  # Give system time to stabilize
+    time.sleep(2)
 
     host = serve_cfg.get("host", "127.0.0.1")
     port_start, port_end = serve_cfg.get("port_range", [8001, 8099])
@@ -323,14 +332,22 @@ def deploy_vllm(repo_id: str, serve_cfg: Dict[str, Any], run_dir: str) -> Dict[s
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = [
-        "vllm", "serve", repo_id,
-        "--tensor-parallel-size", str(serve_cfg.get("tensor_parallel_size", 1)),
-        "--pipeline-parallel-size", str(serve_cfg.get("pipeline_parallel_size", 1)),
+        "vllm",
+        "serve",
+        repo_id,
+        "--tensor-parallel-size",
+        str(serve_cfg.get("tensor_parallel_size", 1)),
+        "--pipeline-parallel-size",
+        str(serve_cfg.get("pipeline_parallel_size", 1)),
         "--trust-remote-code",
-        "--max-model-len", str(serve_cfg.get("max_model_len", 8192)),
-        "--gpu-memory-utilization", str(serve_cfg.get("gpu_memory_utilization", 0.9)),
-        "--host", host,
-        "--port", str(port),
+        "--max-model-len",
+        str(serve_cfg.get("max_model_len", 8192)),
+        "--gpu-memory-utilization",
+        str(serve_cfg.get("gpu_memory_utilization", 0.9)),
+        "--host",
+        host,
+        "--port",
+        str(port),
     ]
 
     attention_backend = serve_cfg.get("attention_backend")
@@ -343,10 +360,12 @@ def deploy_vllm(repo_id: str, serve_cfg: Dict[str, Any], run_dir: str) -> Dict[s
         env["HF_TOKEN"] = hf_token
         env.setdefault("HF_TOKEN", hf_token)
 
-    env["HF_HUB_ENABLE_HF_TRANSFER"] = str(serve_cfg.get("hf_hub_enable_hf_transfer", 0))
+    env["HF_HUB_ENABLE_HF_TRANSFER"] = str(
+        serve_cfg.get("hf_hub_enable_hf_transfer", 0)
+    )
 
     logger.info("Starting vLLM on %s", base_url)
-    cmd_str = ' '.join(shlex.quote(str(arg)) for arg in cmd)
+    cmd_str = " ".join(shlex.quote(str(arg)) for arg in cmd)
     logger.info("Command: %s", _mask_values(cmd_str, [hf_token]))
 
     _append_command_log(Path(run_dir), cmd, [])
@@ -368,11 +387,15 @@ def deploy_vllm(repo_id: str, serve_cfg: Dict[str, Any], run_dir: str) -> Dict[s
     rc = process.poll()
     if rc is not None:
         tail = _tail_file(log_path, 200)
-        raise RuntimeError(
-            f"vLLM exited immediately (rc={rc}). Tail of log:\n{tail}"
-        )
+        raise RuntimeError(f"vLLM exited immediately (rc={rc}). Tail of log:\n{tail}")
 
-    return {"process": process, "base_url": base_url, "port": port, "log_path": str(log_path)}
+    return {
+        "process": process,
+        "base_url": base_url,
+        "port": port,
+        "log_path": str(log_path),
+    }
+
 
 def _http_get(url: str, timeout: int = 10) -> Tuple[int, str]:
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -385,9 +408,36 @@ def _http_get(url: str, timeout: int = 10) -> Tuple[int, str]:
         return e.code, body
 
 
-@task(persist_result=True)
-def wait_for_health(base_url: str, health_endpoint: str, timeout_sec: int) -> Optional[str]:
+def _health_check_cache_key(task_run_context: Any, parameters: Dict[str, Any]) -> str:
+    """Cache based on stage, model, and run_id to ensure fresh health checks per run."""
+    import hashlib
+    import json
+
+    payload = {
+        "stage": parameters.get("stage", "unknown"),
+        "base_url": parameters.get("base_url"),
+        "health_endpoint": parameters.get("health_endpoint"),
+        "run_id": parameters.get("run_id", ""),
+    }
+    serialized = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+@task(
+    retries=20, 
+    retry_delay_seconds=30, 
+    persist_result=True, 
+    cache_key_fn=_health_check_cache_key,
+    refresh_cache=True
+)
+def wait_for_health(
+    base_url: str, 
+    health_endpoint: str, 
+    timeout_sec: int,
+    stage: str = "unknown",
+    run_id: str = ""
+) -> Optional[str]:
     logger = get_run_logger()
+    logger.info("Waiting for %s vLLM health check at %s (run_id=%s)", stage, base_url, run_id)
     deadline = time.time() + timeout_sec
     url = f"{base_url}{health_endpoint}"
     last_error = None
@@ -398,42 +448,73 @@ def wait_for_health(base_url: str, health_endpoint: str, timeout_sec: int) -> Op
     while time.time() < deadline:
         attempt += 1
         remaining = int(deadline - time.time())
-        
+
         try:
             code, body = _http_get(url, timeout=10)
 
             if health_endpoint.rstrip("/") == "/health":
                 if code == 200:
-                    logger.info("✓ vLLM alive (GET %s -> 200)", url)
-                    return None
+                    logger.info("✓ vLLM process alive, checking model status...")
+
+                    models_url = f"{base_url}/v1/models"
+                    model_code, model_body = _http_get(models_url, timeout=10)
+
+                    if model_code == 200:
+                        payload = json.loads(model_body)
+                        if payload.get("data"):
+                            logger.info("✓ Model loaded!")
+                            return payload["data"][0].get("id")
+
+                    logger.info("vLLM alive but model not ready yet...")
+
                 last_error = f"GET {url} -> HTTP {code} body={body[:200]!r}"
-                logger.info("Health check attempt %d: not ready yet (HTTP %d), retrying in 5s... (%ds remaining)", 
-                           attempt, code, remaining)
+                logger.info(
+                    "Health check attempt %d: not ready yet (HTTP %d), retrying in 5s... (%ds remaining)",
+                    attempt,
+                    code,
+                    remaining,
+                )
 
             else:
                 if code != 200:
                     last_error = f"GET {url} -> HTTP {code} body={body[:200]!r}"
-                    logger.info("Health check attempt %d: not ready yet (HTTP %d), retrying in 5s... (%ds remaining)", 
-                               attempt, code, remaining)
+                    logger.info(
+                        "Health check attempt %d: not ready yet (HTTP %d), retrying in 5s... (%ds remaining)",
+                        attempt,
+                        code,
+                        remaining,
+                    )
                 else:
                     payload = json.loads(body) if body.strip() else {}
                     data = payload.get("data", [])
                     if data:
                         model_id = data[0].get("id", "")
-                        logger.info("✓ vLLM ready with model id %s (attempt %d)", model_id, attempt)
+                        logger.info(
+                            "✓ vLLM ready with model id %s (attempt %d)",
+                            model_id,
+                            attempt,
+                        )
                         return model_id
                     last_error = f"No model data yet: {payload}"
-                    logger.info("Health check attempt %d: model not loaded yet, retrying in 5s... (%ds remaining)", 
-                               attempt, remaining)
+                    logger.info(
+                        "Health check attempt %d: model not loaded yet, retrying in 5s... (%ds remaining)",
+                        attempt,
+                        remaining,
+                    )
 
         except Exception as exc:
             last_error = str(exc)
-            logger.info("Health check attempt %d: connection failed (%s), retrying in 5s... (%ds remaining)", 
-                       attempt, str(exc)[:100], remaining)
+            logger.info(
+                "Health check attempt %d: connection failed (%s), retrying in 5s... (%ds remaining)",
+                attempt,
+                str(exc)[:100],
+                remaining,
+            )
 
         time.sleep(5)
 
     raise TimeoutError(f"vLLM health check failed for {url}: {last_error}")
+
 
 @task(persist_result=False)
 def stop_process(process: subprocess.Popen) -> None:
@@ -448,7 +529,7 @@ def stop_process(process: subprocess.Popen) -> None:
     except subprocess.TimeoutExpired:
         logger.warning("vLLM did not stop, killing")
         process.kill()
-    
+
     # Extra cleanup after stopping
     time.sleep(2)
     _cleanup_gpu_memory()
@@ -489,7 +570,7 @@ def run_eval(
     if concurrency:
         logger.info("Concurrency: %d", concurrency)
     logger.info("=" * 60)
-    
+
     if script:
         cmd = shlex.split(script)
     else:
@@ -554,72 +635,82 @@ def evaluate_sft_gate(
     baseline_report_path: str,
     gate_cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """
+    Simplified SFT gate: Pass if accuracy metrics meet absolute thresholds.
+    No latency or format checks.
+    """
+    logger = get_run_logger()
     sft_report = _read_json(Path(sft_report_path))
     baseline = _read_json_optional(Path(baseline_report_path))
     baseline_missing = baseline is None
+    
     if baseline_missing:
-        logger = get_run_logger()
         logger.warning(
-            "Baseline report not found at %s; using current SFT as baseline",
+            "Baseline report not found at %s; will evaluate based on absolute thresholds only",
             baseline_report_path,
         )
-        baseline = sft_report
 
-    # New gate: ignore latency + format; continue if either metric improves vs baseline.
+    # Extract current metrics
     current_meta = _get_pct(sft_report, "overall_metadata_accuracy")
     current_rows = _get_pct(sft_report, "table_rows_accuracy")
-    baseline_meta = _get_pct(baseline, "overall_metadata_accuracy")
-    baseline_rows = _get_pct(baseline, "table_rows_accuracy")
-
-    # Backwards compatibility: baseline might only have "winrate" (0..1)
-    if baseline_meta is None and baseline.get("winrate") is not None:
-        try:
-            baseline_meta = float(baseline["winrate"]) * 100.0
-        except Exception:
-            baseline_meta = None
+    
+    # Backwards compatibility: if report has "winrate" (0..1), convert to percentage
     if current_meta is None and sft_report.get("winrate") is not None:
         try:
             current_meta = float(sft_report["winrate"]) * 100.0
         except Exception:
             current_meta = None
 
-    improved_meta = (
-        current_meta is not None
-        and baseline_meta is not None
-        and current_meta > baseline_meta
-    )
-    improved_rows = (
-        current_rows is not None
-        and baseline_rows is not None
-        and current_rows > baseline_rows
-    )
+    # Get thresholds from config (absolute thresholds in percentage, e.g., 70.0 = 70%)
+    min_metadata_acc = gate_cfg.get("min_metadata_accuracy", 70.0)  # default 70%
+    min_rows_acc = gate_cfg.get("min_rows_accuracy", 70.0)  # default 70%
 
-    # If baseline is missing, allow continuing (can't compare).
-    passed = True if baseline_missing else (improved_meta or improved_rows)
+    # Check if metrics meet thresholds
+    meta_pass = current_meta is not None and current_meta >= min_metadata_acc
+    rows_pass = current_rows is not None and current_rows >= min_rows_acc
+
+    # Gate passes if BOTH metrics meet thresholds
+    passed = meta_pass and rows_pass
     failures: List[str] = []
-    if not passed:
-        if not improved_meta:
-            failures.append("overall_metadata_accuracy_not_improved")
-        if not improved_rows:
-            failures.append("table_rows_accuracy_not_improved")
+    if not meta_pass:
+        failures.append(f"metadata_accuracy ({current_meta:.1f}%) < threshold ({min_metadata_acc}%)")
+    if not rows_pass:
+        failures.append(f"rows_accuracy ({current_rows:.1f}%) < threshold ({min_rows_acc}%)")
+
+    # Calculate deltas if baseline exists
+    deltas = {}
+    if baseline is not None:
+        baseline_meta = _get_pct(baseline, "overall_metadata_accuracy")
+        baseline_rows = _get_pct(baseline, "table_rows_accuracy")
+        
+        # Backwards compatibility for baseline
+        if baseline_meta is None and baseline.get("winrate") is not None:
+            try:
+                baseline_meta = float(baseline["winrate"]) * 100.0
+            except Exception:
+                baseline_meta = None
+        
+        if current_meta is not None and baseline_meta is not None:
+            deltas["overall_metadata_accuracy_delta"] = current_meta - baseline_meta
+        if current_rows is not None and baseline_rows is not None:
+            deltas["table_rows_accuracy_delta"] = current_rows - baseline_rows
+
+    logger.info("SFT Gate Evaluation:")
+    logger.info("  Metadata Accuracy: %.1f%% (threshold: %.1f%%) - %s", 
+                current_meta or 0, min_metadata_acc, "✓ PASS" if meta_pass else "✗ FAIL")
+    logger.info("  Rows Accuracy: %.1f%% (threshold: %.1f%%) - %s", 
+                current_rows or 0, min_rows_acc, "✓ PASS" if rows_pass else "✗ FAIL")
+    logger.info("  Overall Gate: %s", "✓ PASS" if passed else "✗ FAIL")
 
     return {
         "passed": passed,
         "failures": failures,
-        "deltas": {
-            "overall_metadata_accuracy_delta": (
-                (current_meta - baseline_meta)
-                if current_meta is not None and baseline_meta is not None
-                else None
-            ),
-            "table_rows_accuracy_delta": (
-                (current_rows - baseline_rows)
-                if current_rows is not None and baseline_rows is not None
-                else None
-            ),
-        },
+        "deltas": deltas,
         "baseline_missing": baseline_missing,
-        "thresholds": gate_cfg,
+        "thresholds": {
+            "min_metadata_accuracy": min_metadata_acc,
+            "min_rows_accuracy": min_rows_acc,
+        },
         "metrics": {
             "overall_metadata_accuracy": current_meta,
             "table_rows_accuracy": current_rows,
@@ -634,64 +725,97 @@ def evaluate_grpo_gate(
     baseline_report_path: str,
     gate_cfg: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """
+    Simplified GRPO gate: Pass if accuracy metrics meet absolute thresholds.
+    No latency or format checks.
+    """
+    logger = get_run_logger()
     grpo_report = _read_json(Path(grpo_report_path))
-    _ = sft_report_path  # kept for compatibility; not used in new gate
+    sft_report = _read_json(Path(sft_report_path))
     baseline = _read_json_optional(Path(baseline_report_path))
     baseline_missing = baseline is None
-    if baseline_missing:
-        baseline = grpo_report
 
+    if baseline_missing:
+        logger.warning(
+            "Baseline report not found at %s; will evaluate based on absolute thresholds only",
+            baseline_report_path,
+        )
+
+    # Extract current metrics
     current_meta = _get_pct(grpo_report, "overall_metadata_accuracy")
     current_rows = _get_pct(grpo_report, "table_rows_accuracy")
-    baseline_meta = _get_pct(baseline, "overall_metadata_accuracy")
-    baseline_rows = _get_pct(baseline, "table_rows_accuracy")
-
-    if baseline_meta is None and baseline.get("winrate") is not None:
-        try:
-            baseline_meta = float(baseline["winrate"]) * 100.0
-        except Exception:
-            baseline_meta = None
+    
+    # Backwards compatibility
     if current_meta is None and grpo_report.get("winrate") is not None:
         try:
             current_meta = float(grpo_report["winrate"]) * 100.0
         except Exception:
             current_meta = None
 
-    improved_meta = (
-        current_meta is not None
-        and baseline_meta is not None
-        and current_meta > baseline_meta
-    )
-    improved_rows = (
-        current_rows is not None
-        and baseline_rows is not None
-        and current_rows > baseline_rows
-    )
+    # Get thresholds from config
+    min_metadata_acc = gate_cfg.get("min_metadata_accuracy", 70.0)
+    min_rows_acc = gate_cfg.get("min_rows_accuracy", 70.0)
 
-    passed = True if baseline_missing else (improved_meta or improved_rows)
+    # Check if metrics meet thresholds
+    meta_pass = current_meta is not None and current_meta >= min_metadata_acc
+    rows_pass = current_rows is not None and current_rows >= min_rows_acc
+
+    # Gate passes if BOTH metrics meet thresholds
+    passed = meta_pass and rows_pass
     failures: List[str] = []
-    if not passed:
-        if not improved_meta:
-            failures.append("overall_metadata_accuracy_not_improved")
-        if not improved_rows:
-            failures.append("table_rows_accuracy_not_improved")
+    if not meta_pass:
+        failures.append(f"metadata_accuracy ({current_meta:.1f}%) < threshold ({min_metadata_acc}%)")
+    if not rows_pass:
+        failures.append(f"rows_accuracy ({current_rows:.1f}%) < threshold ({min_rows_acc}%)")
+
+    # Calculate deltas
+    deltas = {}
+    
+    # Delta vs SFT
+    sft_meta = _get_pct(sft_report, "overall_metadata_accuracy")
+    sft_rows = _get_pct(sft_report, "table_rows_accuracy")
+    if sft_meta is None and sft_report.get("winrate") is not None:
+        try:
+            sft_meta = float(sft_report["winrate"]) * 100.0
+        except Exception:
+            sft_meta = None
+    
+    if current_meta is not None and sft_meta is not None:
+        deltas["grpo_vs_sft_metadata_delta"] = current_meta - sft_meta
+    if current_rows is not None and sft_rows is not None:
+        deltas["grpo_vs_sft_rows_delta"] = current_rows - sft_rows
+
+    # Delta vs Baseline
+    if baseline is not None:
+        baseline_meta = _get_pct(baseline, "overall_metadata_accuracy")
+        baseline_rows = _get_pct(baseline, "table_rows_accuracy")
+        
+        if baseline_meta is None and baseline.get("winrate") is not None:
+            try:
+                baseline_meta = float(baseline["winrate"]) * 100.0
+            except Exception:
+                baseline_meta = None
+        
+        if current_meta is not None and baseline_meta is not None:
+            deltas["grpo_vs_baseline_metadata_delta"] = current_meta - baseline_meta
+        if current_rows is not None and baseline_rows is not None:
+            deltas["grpo_vs_baseline_rows_delta"] = current_rows - baseline_rows
+
+    logger.info("GRPO Gate Evaluation:")
+    logger.info("  Metadata Accuracy: %.1f%% (threshold: %.1f%%) - %s", 
+                current_meta or 0, min_metadata_acc, "✓ PASS" if meta_pass else "✗ FAIL")
+    logger.info("  Rows Accuracy: %.1f%% (threshold: %.1f%%) - %s", 
+                current_rows or 0, min_rows_acc, "✓ PASS" if rows_pass else "✗ FAIL")
+    logger.info("  Overall Gate: %s", "✓ PASS" if passed else "✗ FAIL")
 
     return {
         "passed": passed,
         "failures": failures,
-        "deltas": {
-            "overall_metadata_accuracy_delta": (
-                (current_meta - baseline_meta)
-                if current_meta is not None and baseline_meta is not None
-                else None
-            ),
-            "table_rows_accuracy_delta": (
-                (current_rows - baseline_rows)
-                if current_rows is not None and baseline_rows is not None
-                else None
-            ),
+        "deltas": deltas,
+        "thresholds": {
+            "min_metadata_accuracy": min_metadata_acc,
+            "min_rows_accuracy": min_rows_acc,
         },
-        "thresholds": gate_cfg,
         "metrics": {
             "overall_metadata_accuracy": current_meta,
             "table_rows_accuracy": current_rows,
@@ -734,8 +858,8 @@ def promote_alias_pointer(
 def _send_email(message: str, config: Dict[str, Any]) -> None:
     """Send email notification using SMTP."""
     import smtplib
-    from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
 
     smtp_host = config.get("smtp_host", "smtp.gmail.com")
     smtp_port = config.get("smtp_port", 587)
@@ -789,32 +913,50 @@ def _send_slack(message: str, webhook_url: str) -> None:
         return
 
 
-@task(persist_result=True)
+@task(persist_result=False)
 def send_notification(message: str, notify_cfg: Dict[str, Any]) -> None:
     """Send notification via configured backend (email, google_chat, slack)."""
     logger = get_run_logger()
     backend = notify_cfg.get("backend", "slack")
 
+    logger.info("=" * 60)
+    logger.info("Attempting to send notification via backend: %s", backend)
+    logger.info("Notification message preview:")
+    logger.info(message[:500])  # Log first 500 chars
+    logger.info("=" * 60)
+
     try:
         if backend == "email":
-            _send_email(message, notify_cfg.get("email", {}))
-            logger.info("Email notification sent")
+            email_cfg = notify_cfg.get("email", {})
+            logger.info("Sending email notification with config: %s", 
+                       {k: v for k, v in email_cfg.items() if 'password' not in k.lower()})
+            _send_email(message, email_cfg)
+            logger.info("✓ Email notification sent successfully")
         elif backend == "google_chat":
-            webhook_url = os.getenv(
-                notify_cfg.get("google_chat_webhook_env", "GOOGLE_CHAT_WEBHOOK_URL")
-            )
+            webhook_env = notify_cfg.get("google_chat_webhook_env", "GOOGLE_CHAT_WEBHOOK_URL")
+            webhook_url = os.getenv(webhook_env)
+            logger.info("Google Chat webhook env var: %s", webhook_env)
+            logger.info("Webhook URL present: %s", bool(webhook_url))
             if webhook_url:
+                logger.info("Sending to Google Chat...")
                 _send_google_chat(message, webhook_url)
-                logger.info("Google Chat notification sent")
+                logger.info("✓ Google Chat notification sent successfully")
+            else:
+                logger.error("✗ Google Chat webhook URL not found in environment variable '%s'", webhook_env)
+                logger.error("Available env vars: %s", list(os.environ.keys()))
         elif backend == "slack":
-            webhook_url = os.getenv(
-                notify_cfg.get("slack_webhook_env", "SLACK_WEBHOOK_URL")
-            )
+            webhook_env = notify_cfg.get("slack_webhook_env", "SLACK_WEBHOOK_URL")
+            webhook_url = os.getenv(webhook_env)
+            logger.info("Slack webhook env var: %s", webhook_env)
+            logger.info("Webhook URL present: %s", bool(webhook_url))
             if webhook_url:
+                logger.info("Sending to Slack...")
                 _send_slack(message, webhook_url)
-                logger.info("Slack notification sent")
+                logger.info("✓ Slack notification sent successfully")
+            else:
+                logger.error("✗ Slack webhook URL not found in environment variable '%s'", webhook_env)
         else:
-            logger.warning("Unknown notification backend: %s", backend)
+            logger.error("✗ Unknown notification backend: %s", backend)
     except Exception as exc:
-        logger.warning("Notification failed: %s", exc)
-
+        logger.error("✗ Notification failed with exception: %s", exc, exc_info=True)
+        logger.error("Exception type: %s", type(exc).__name__)

@@ -6,7 +6,7 @@ Add/remove fields here and prompts will automatically adjust.
 """
 
 from dataclasses import dataclass
-from typing import List, Literal, Optional
+from typing import Literal, List
 
 FieldType = Literal["metadata", "table"]
 Language = Literal["en", "ja", "vi"]
@@ -16,19 +16,14 @@ Language = Literal["en", "ja", "vi"]
 class FieldDefinition:
     """Definition of a field with multilingual support."""
     key: str
-
     field_type: FieldType
-
     name_en: str
     name_ja: str
     name_vi: str
-
     description_en: str
     description_ja: str
     description_vi: str
-
     data_type: str = "string"
-
     optional: bool = False
 
     def get_name(self, language: Language) -> str:
@@ -65,7 +60,7 @@ FIELD_DEFINITIONS: List[FieldDefinition] = [
         field_type="metadata",
         name_en="document_date",
         name_ja="伝票日付",
-        name_vi="Ngày chứng từ(dd/mm/yyyy)",
+        name_vi="Ngày chứng từ",
         description_en="""- Document issue date in dd/mm/yyyy format
    - Extract exactly as shown on document
    - If multiple dates exist, choose the one labeled as issue/document date""",
@@ -82,7 +77,7 @@ FIELD_DEFINITIONS: List[FieldDefinition] = [
         field_type="metadata",
         name_en="export_date",
         name_ja="出庫日付",
-        name_vi="Ngày xuất(dd/mm/yyyy)",
+        name_vi="Ngày xuất",
         description_en="""- Delivery or shipment date in dd/mm/yyyy format
    - Extract exactly as shown on document
    - May be same as or different from document_date""",
@@ -198,16 +193,3 @@ FIELD_DEFINITIONS: List[FieldDefinition] = [
         data_type="number",
     ),
 ]
-
-
-def get_fields_by_type(field_type: FieldType) -> List[FieldDefinition]:
-    """Get all fields of a specific type."""
-    return [f for f in FIELD_DEFINITIONS if f.field_type == field_type]
-
-
-def get_field_names(
-    language: Language, field_type: Optional[FieldType] = None
-) -> List[str]:
-    """Get field names for a specific language and optionally filter by type."""
-    fields = FIELD_DEFINITIONS if field_type is None else get_fields_by_type(field_type)
-    return [f.get_name(language) for f in fields]

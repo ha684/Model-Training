@@ -136,15 +136,17 @@ def _summarize_slack(decision: Dict[str, Any], run_id: str, eval_paths: Dict[str
             lines.append(sft_summary)
             
             # Add delta info if available
-            if not sft.get("baseline_missing"):
-                delta = sft.get("deltas", {}).get("winrate_delta", 0)
-                lines.append(f"Δ vs Baseline: {delta:+.2%}")
+            deltas = sft.get("deltas", {})
+            if deltas.get("overall_metadata_accuracy_delta") is not None:
+                lines.append(f"Δ Metadata vs Baseline: {deltas['overall_metadata_accuracy_delta']:+.1f}%")
+            if deltas.get("table_rows_accuracy_delta") is not None:
+                lines.append(f"Δ Rows vs Baseline: {deltas['table_rows_accuracy_delta']:+.1f}%")
         except Exception as e:
             # Fallback to basic metrics
             lines.append(
                 f"\n--- SFT: {'✓ PASS' if sft.get('passed') else '✗ FAIL'} ---\n"
-                f"Accuracy: {sft['metrics'].get('winrate', 0) * 100:.1f}%\n"
-                f"Format Pass Rate: {sft['metrics'].get('format_pass_rate', 0) * 100:.1f}%"
+                f"Metadata Accuracy: {sft['metrics'].get('overall_metadata_accuracy', 0):.1f}%\n"
+                f"Rows Accuracy: {sft['metrics'].get('table_rows_accuracy', 0):.1f}%"
             )
     
     grpo = decision.get("grpo")
@@ -162,16 +164,16 @@ def _summarize_slack(decision: Dict[str, Any], run_id: str, eval_paths: Dict[str
             
             # Add delta info
             deltas = grpo.get("deltas", {})
-            if "grpo_vs_sft_delta" in deltas:
-                lines.append(f"Δ vs SFT: {deltas['grpo_vs_sft_delta']:+.2%}")
-            if "grpo_vs_baseline_delta" in deltas:
-                lines.append(f"Δ vs Baseline: {deltas['grpo_vs_baseline_delta']:+.2%}")
+            if deltas.get("grpo_vs_sft_metadata_delta") is not None:
+                lines.append(f"Δ Metadata vs SFT: {deltas['grpo_vs_sft_metadata_delta']:+.1f}%")
+            if deltas.get("grpo_vs_baseline_metadata_delta") is not None:
+                lines.append(f"Δ Metadata vs Baseline: {deltas['grpo_vs_baseline_metadata_delta']:+.1f}%")
         except Exception as e:
             # Fallback to basic metrics
             lines.append(
                 f"\n--- GRPO: {'✓ PASS' if grpo.get('passed') else '✗ FAIL'} ---\n"
-                f"Accuracy: {grpo['metrics'].get('winrate', 0) * 100:.1f}%\n"
-                f"Format Pass Rate: {grpo['metrics'].get('format_pass_rate', 0) * 100:.1f}%"
+                f"Metadata Accuracy: {grpo['metrics'].get('overall_metadata_accuracy', 0):.1f}%\n"
+                f"Rows Accuracy: {grpo['metrics'].get('table_rows_accuracy', 0):.1f}%"
             )
     
     promoted = decision.get("promotion")
@@ -249,16 +251,19 @@ def pipeline_flow(config_path: str) -> None:
     )
     sft_revision = wait_hf_model_ready(sft_model_id, hf_token)
 
-    # Pause to allow resources to stabilize after training
     pause_between_tasks("Allowing resources to stabilize after SFT training", 10)
 
     sft_deploy = deploy_vllm(sft_model_id, serve_cfg, str(run_dir))
     try:
+        # FIXED: Pass run_id to ensure fresh health check every run
         served_model = wait_for_health(
             sft_deploy["base_url"],
             serve_cfg.get("health_endpoint", "/v1/models"),
             serve_cfg.get("startup_timeout_sec", 900),
+            stage="sft",
+            run_id=run_id,
         )
+        
         run_eval(
             base_url=sft_deploy["base_url"],
             model_name=served_model,
@@ -303,6 +308,7 @@ def pipeline_flow(config_path: str) -> None:
         hub_model_id=grpo_model_id,
         hf_token=hf_token,
     )
+    
     run_command(
         name="train_grpo",
         cmd=grpo_cmd,
@@ -311,6 +317,7 @@ def pipeline_flow(config_path: str) -> None:
         env=env,
         mask_values=[hf_token],
     )
+    
     grpo_revision = wait_hf_model_ready(grpo_model_id, hf_token)
     
     logger.info("Cleaning up before GRPO deployment...")
@@ -324,7 +331,12 @@ def pipeline_flow(config_path: str) -> None:
             grpo_deploy["base_url"],
             serve_cfg.get("health_endpoint", "/v1/models"),
             serve_cfg.get("startup_timeout_sec", 900),
+            stage="grpo",
+            run_id=run_id,
         )
+        
+        pause_between_tasks("Ensuring vLLM is fully ready before GRPO evaluation", 5)
+        
         run_eval(
             base_url=grpo_deploy["base_url"],
             model_name=served_model,
@@ -342,7 +354,6 @@ def pipeline_flow(config_path: str) -> None:
     finally:
         stop_process(grpo_deploy["process"])
 
-    # Pause after stopping vLLM before gate evaluation
     pause_between_tasks("Allowing cleanup after stopping vLLM", 5)
 
     decision["grpo"] = evaluate_grpo_gate(

@@ -1,5 +1,6 @@
 import json
 import re
+
 from rapidfuzz import fuzz
 
 FIELD_MAPPING_VN_TO_EN = {
@@ -91,43 +92,52 @@ def is_float_equal(val1, val2):
     except:
         return False
 
+
 def normalize_date(val):
-    if val is None: return ""
+    if val is None:
+        return ""
     s = str(val).strip()
     s = s.replace("-", "/")
     s = s.replace(" ", "")
     return s
 
+
 def normalize_ar_code(val):
-    if val is None: return ""
+    if val is None:
+        return ""
     s = str(val).strip()
-    parts = re.split(r'[_\s]+', s)
+    parts = re.split(r"[_\s]+", s)
     return parts[0].strip() if parts else s
+
 
 def check_metadata_field(key, pred_val, gt_val):
     p = normalize_text(pred_val)
     g = normalize_text(gt_val)
 
-    if p is None and g is None: return 1.0
-    if p is None or g is None: return 0.0
-    
+    if p is None and g is None:
+        return 1.0
+    if p is None or g is None:
+        return 0.0
+
     key_lower = key.lower()
-    
+
     if "date" in key_lower:
         return 1.0 if normalize_date(p) == normalize_date(g) else 0.0
-    
+
     if key == "document_number":
         return 1.0 if normalize_number_str(p) == normalize_number_str(g) else 0.0
-    
+
     if key == "ar_code":
         return 1.0 if normalize_ar_code(p) == normalize_ar_code(g) else 0.0
 
     if key in ["receiving_warehouse", "address"]:
-        if p == g: return 1.0
+        if p == g:
+            return 1.0
         score = fuzz.ratio(p.lower(), g.lower())
         return 1.0 if score > 85 else 0.0
 
     return 1.0 if p == g else 0.0
+
 
 def normalize_json_structure(data):
     if not isinstance(data, dict):
@@ -152,6 +162,7 @@ def normalize_json_structure(data):
 
     return {"metadata": norm_meta, "table_rows": norm_rows}
 
+
 def format_reward_func(completions, **kwargs):
     rewards = []
     for completion in completions:
@@ -167,28 +178,31 @@ def format_reward_func(completions, **kwargs):
             rewards.append(score)
     return rewards
 
+
 def metadata_reward_func(completions, answer, **kwargs):
     rewards = []
 
-    METADATA_SCALE = 5.0 
-    
+    METADATA_SCALE = 6.0
+
     VALID_SCHEMA_KEYS = set(ALL_META_KEYS)
 
     for completion, gt_item in zip(completions, answer):
         pred_raw = extract_json_from_text(completion)
         if pred_raw is None:
-            rewards.append(-1.0 * METADATA_SCALE * 1.5) 
+            rewards.append(-1.0 * METADATA_SCALE * 1.5)
             continue
 
         gt_raw = gt_item if isinstance(gt_item, dict) else json.loads(gt_item)
         pred_data = normalize_json_structure(pred_raw)
         gt_data = normalize_json_structure(gt_raw)
-        
+
         gt_meta = gt_data["metadata"]
         pred_meta = pred_data["metadata"]
 
-        gt_active_keys = [k for k in ALL_META_KEYS if normalize_text(gt_meta.get(k)) is not None]
-        
+        gt_active_keys = [
+            k for k in ALL_META_KEYS if normalize_text(gt_meta.get(k)) is not None
+        ]
+
         extra_valid_keys = []
         for k in ALL_META_KEYS:
             gt_val = normalize_text(gt_meta.get(k))
@@ -219,11 +233,11 @@ def metadata_reward_func(completions, answer, **kwargs):
 def table_row_reward_func(completions, answer, **kwargs):
     rewards = []
 
-    BASE_SCALE = 4.0        
-    
-    ROW_MATCH_BONUS = 0.3   
-    
-    ROW_WRONG_PENALTY = 1.0 
+    BASE_SCALE = 5.0
+
+    ROW_MATCH_BONUS = 0.5
+
+    ROW_WRONG_PENALTY = 1.0
 
     ROW_MISSING_PENALTY = 1.0
 
@@ -243,11 +257,12 @@ def table_row_reward_func(completions, answer, **kwargs):
         gt_map = {}
         for r in gt_rows:
             pc = normalize_text(r.get("product_code"))
-            if not pc: continue
+            if not pc:
+                continue
             gt_map[pc] = r.get("quantity")
-        
+
         total_gt = len(gt_map)
-        
+
         if total_gt == 0:
             if len(pred_rows) == 0:
                 rewards.append(BASE_SCALE)
@@ -262,7 +277,7 @@ def table_row_reward_func(completions, answer, **kwargs):
         for r in pred_rows:
             p_code = normalize_text(r.get("product_code"))
             p_qty = r.get("quantity")
-            
+
             if not p_code or p_code in pred_codes_seen:
                 wrong_count += 1
                 continue
@@ -279,7 +294,6 @@ def table_row_reward_func(completions, answer, **kwargs):
 
         missing_count = total_gt - matched_count
 
-        
         precision = matched_count / len(pred_rows) if len(pred_rows) > 0 else 0
         recall = matched_count / total_gt if total_gt > 0 else 0
         f1 = 0
@@ -287,14 +301,48 @@ def table_row_reward_func(completions, answer, **kwargs):
             f1 = 2 * (precision * recall) / (precision + recall)
 
         bonus_score = matched_count * ROW_MATCH_BONUS
-        
-        penalty_score = (wrong_count * ROW_WRONG_PENALTY) + (missing_count * ROW_MISSING_PENALTY)
-        
-        # Tổng hợp
+
+        penalty_score = (wrong_count * ROW_WRONG_PENALTY) + (
+            missing_count * ROW_MISSING_PENALTY
+        )
+
         final_score = (f1 * BASE_SCALE) + bonus_score - penalty_score
 
         final_score = max(final_score, -10.0)
-        
+
         rewards.append(final_score)
 
     return rewards
+
+
+def length_penalty_reward_func(completions, answer, **kwargs):
+    """
+    Penalty if the output length is significantly different from the Ground Truth.
+    Helps prevent infinite loops or too short outputs.
+    """
+    rewards = []
+
+    for completion, gt_item in zip(completions, answer):
+        gt_str = gt_item if isinstance(gt_item, str) else json.dumps(gt_item)
+        gt_len = len(gt_str.replace(" ", "").replace("\n", ""))
+
+        pred_len = len(completion.replace(" ", "").replace("\n", ""))
+
+        if gt_len == 0:
+            gt_len = 1
+
+        ratio = pred_len / gt_len
+        score = 0.0
+
+        if ratio > 2.0:
+            score = -4.0
+        elif ratio > 1.5:
+            score = -2.0
+        elif ratio < 0.5:
+            score = -4.0
+        elif ratio < 0.7:
+            score = -2.0
+        else:
+            score = 0.5
+
+        rewards.append(score)

@@ -57,9 +57,9 @@ def detect_language(data: Dict | str) -> str:
     vietnamese_fields = [
         "Số phiếu",
         "Ngày chứng từ",
-        "Ngày chứng từ(dd/mm/yyyy)",
+        "Ngày chứng từ",
         "Ngày xuất",
-        "Ngày xuất(dd/mm/yyyy)",
+        "Ngày xuất",
         "Kho nhận",
         "Địa chỉ",
         "Mã AR",
